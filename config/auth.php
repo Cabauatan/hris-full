@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\Applicant;
 use App\Models\User;
 
 return [
@@ -42,6 +43,10 @@ return [
             'driver' => 'session',
             'provider' => 'users',
         ],
+        'applicant' => [
+            'driver' => 'session',
+            'provider' => 'applicants',
+        ],
     ],
 
     /*
@@ -65,6 +70,10 @@ return [
         'users' => [
             'driver' => 'eloquent',
             'model' => env('AUTH_MODEL', User::class),
+        ],
+        'applicants' => [
+            'driver' => 'eloquent',
+            'model' => Applicant::class,
         ],
 
         // 'users' => [

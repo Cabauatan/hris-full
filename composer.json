@@ -11,6 +11,7 @@
     "require": {
         "php": "^8.3",
         "laravel/framework": "^13.17",
+        "laravel/reverb": "^1.12",
         "laravel/tinker": "^3.0"
     },
     "require-dev": {
@@ -49,8 +50,12 @@
             "@php artisan dev"
         ],
         "test": [
-            "@php artisan config:clear --ansi @no_additional_args",
-            "@php artisan test"
+            "Composer\\Config::disableProcessTimeout",
+            "@php vendor/bin/phpunit"
+        ],
+        "test:random": [
+            "Composer\\Config::disableProcessTimeout",
+            "@php vendor/bin/phpunit --order-by=random --random-order-seed=1400"
         ],
         "post-autoload-dump": [
             "Illuminate\\Foundation\\ComposerScripts::postAutoloadDump",
