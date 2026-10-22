@@ -167,14 +167,25 @@ export default {
       redirect: 'manual',
       cache: 'no-store',
     })
+    let phase = 'fetch'
     try {
       const upstream = await fetch(outbound, { cf: { cacheTtl: 0, cacheEverything: false } })
+      phase = 'headers'
+      const headers = responseHeaders(upstream)
+      phase = 'response'
       return new Response(upstream.body, {
         status: upstream.status,
         statusText: upstream.statusText,
-        headers: responseHeaders(upstream),
+        headers,
       })
-    } catch {
+    } catch (failure) {
+      let errorType = 'Unknown'
+      if (failure instanceof TypeError) errorType = 'TypeError'
+      else if (failure instanceof RangeError) errorType = 'RangeError'
+      else if (typeof DOMException !== 'undefined' && failure instanceof DOMException)
+        errorType = 'DOMException'
+      else if (failure instanceof Error) errorType = 'Error'
+      console.error('hris_proxy_failure', { phase, errorType })
       return error(502, 'The HRIS backend is temporarily unavailable. Please retry.')
     }
   },

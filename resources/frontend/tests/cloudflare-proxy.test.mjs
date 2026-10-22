@@ -460,6 +460,7 @@ test('unsupported methods and WebSocket upgrades are refused before contacting t
 })
 
 test('backend network failures return a generic non-cacheable 502 without leaking infrastructure errors', async () => {
+  const logger = mock.method(console, 'error', () => {})
   mock.method(globalThis, 'fetch', () => {
     throw new Error('Private infrastructure details')
   })
@@ -471,6 +472,57 @@ test('backend network failures return a generic non-cacheable 502 without leakin
   assert.deepEqual(await response.json(), {
     message: 'The HRIS backend is temporarily unavailable. Please retry.',
   })
+  assert.deepEqual(
+    logger.mock.calls.map((call) => call.arguments),
+    [['hris_proxy_failure', { phase: 'fetch', errorType: 'Error' }]],
+  )
+})
+
+test('upstream cookie API failures log only a fixed phase and error type while preserving the generic 502', async () => {
+  const logger = mock.method(console, 'error', () => {})
+  const upstream = new Response('private response body', {
+    headers: { 'set-cookie': 'private_session=private-cookie' },
+  })
+  const failure = new TypeError('private-token-in-error-message')
+  failure.name = 'private-token-in-error-name'
+  failure.stack = 'private-token-in-error-stack'
+  Object.defineProperty(upstream.headers, 'getSetCookie', {
+    value: () => {
+      throw failure
+    },
+  })
+  mock.method(globalThis, 'fetch', async () => upstream)
+
+  const response = await worker.fetch(
+    request('/api/v1/auth/me?private=private-query', {
+      headers: { cookie: 'private_session=private-request-cookie' },
+    }),
+    environment(),
+  )
+
+  assert.equal(response.status, 502)
+  assert.deepEqual(await response.json(), {
+    message: 'The HRIS backend is temporarily unavailable. Please retry.',
+  })
+  assert.deepEqual(
+    logger.mock.calls.map((call) => call.arguments),
+    [['hris_proxy_failure', { phase: 'headers', errorType: 'TypeError' }]],
+  )
+})
+
+test('non-Error upstream failures cannot introduce arbitrary values into proxy logs', async () => {
+  const logger = mock.method(console, 'error', () => {})
+  mock.method(globalThis, 'fetch', () => {
+    throw { name: 'private-error-name', message: 'private-message', token: 'private-token' }
+  })
+
+  const response = await worker.fetch(request('/up'), environment())
+
+  assert.equal(response.status, 502)
+  assert.deepEqual(
+    logger.mock.calls.map((call) => call.arguments),
+    [['hris_proxy_failure', { phase: 'fetch', errorType: 'Unknown' }]],
+  )
 })
 
 test('API authorization and validation failures remain failures with their original payloads', async () => {
