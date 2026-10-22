@@ -1,0 +1,27 @@
+# Enable ONLY with TELEGRAM_ENABLED=true, after stopping the old polling host.
+[Unit]
+Description=HRIS Telegram polling (one host only)
+After=network-online.target mariadb.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User={{USER}}
+Group={{USER}}
+WorkingDirectory={{ROOT}}/backend
+ExecStart=/usr/bin/php8.5 artisan telegram:poll --no-interaction
+Restart=always
+RestartSec=15
+TimeoutStopSec=45
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths={{ROOT}}/backend/storage {{ROOT}}/backend/bootstrap/cache
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

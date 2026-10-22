@@ -1,0 +1,93 @@
+# Install inside Nginx http{} (e.g. /etc/nginx/sites-available/hris).
+# Disable the distribution's default site before enabling this default server.
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    return 444;
+}
+
+server {
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    server_name _;
+    ssl_reject_handshake on;
+    return 444;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name {{DOMAIN}};
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/letsencrypt;
+        try_files $uri =404;
+    }
+    location / {
+        return 301 https://{{DOMAIN}}$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name {{DOMAIN}};
+    ssl_certificate /etc/letsencrypt/live/{{DOMAIN}}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/{{DOMAIN}}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    server_tokens off;
+    root {{ROOT}}/frontend/dist;
+    index index.html;
+    client_max_body_size 32m;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options DENY always;
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+
+    location = /api { rewrite ^ /index.php last; }
+    location ^~ /api/ { rewrite ^ /index.php last; }
+    location = /up { rewrite ^ /index.php last; }
+    location = /index.php {
+        internal;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME {{ROOT}}/backend/public/index.php;
+        fastcgi_param DOCUMENT_ROOT {{ROOT}}/backend/public;
+        fastcgi_param SCRIPT_NAME /index.php;
+        fastcgi_param HTTPS on;
+        fastcgi_param SERVER_PORT 443;
+        fastcgi_param HTTP_HOST {{DOMAIN}};
+        fastcgi_param HTTP_PROXY "";
+        fastcgi_pass unix:/run/php/hris.sock;
+        fastcgi_read_timeout 120s;
+    }
+
+    location ^~ /app/ {
+        proxy_pass http://127.0.0.1:8082;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host {{DOMAIN}};
+        proxy_set_header Origin $http_origin;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 90s;
+        proxy_buffering off;
+    }
+    location = /apps { return 404; }
+    location ^~ /apps/ { return 404; }
+    location = /storage { return 404; }
+    location ^~ /storage/ { return 404; }
+    location ~ /\. { return 404; }
+    location ~ \.php(?:/|$) { return 404; }
+
+    location = /index.html {
+        expires -1;
+        try_files $uri =404;
+    }
+    location ^~ /assets/ {
+        expires 1y;
+        try_files $uri =404;
+    }
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

@@ -3,12 +3,19 @@
 namespace Tests\Feature;
 
 use App\Models\CompanyProfile;
+use App\Models\Department;
+use App\Models\Division;
 use App\Models\Employee;
 use App\Models\EmployeeEmploymentHistory;
+use App\Models\Holiday;
 use App\Models\LeaveType;
 use App\Models\Permission;
+use App\Models\Position;
 use App\Models\Role;
+use App\Models\Shift;
 use App\Models\User;
+use App\Models\WorkSchedule;
+use App\Models\WorkScheduleDay;
 use Database\Seeders\AdminUserSeeder;
 use Database\Seeders\CompanyProfileSeeder;
 use Database\Seeders\DatabaseSeeder;
@@ -119,6 +126,13 @@ class SeederConfigurationTest extends FormRequestTestCase
         $roles = Role::query()->orderBy('code')->pluck('id', 'code')->all();
         $permissions = Permission::query()->orderBy('code')->pluck('id', 'code')->all();
         $leaveTypes = LeaveType::query()->orderBy('code')->pluck('id', 'code')->all();
+        $divisions = Division::query()->orderBy('code')->pluck('id', 'code')->all();
+        $departments = Department::query()->orderBy('code')->pluck('id', 'code')->all();
+        $positions = Position::query()->orderBy('code')->pluck('id', 'code')->all();
+        $shifts = Shift::query()->orderBy('code')->pluck('id', 'code')->all();
+        $schedules = WorkSchedule::query()->orderBy('code')->pluck('id', 'code')->all();
+        $scheduleDays = WorkScheduleDay::query()->orderBy('id')->pluck('id')->all();
+        $holidays = Holiday::query()->orderBy('id')->pluck('id')->all();
 
         $this->seed(DatabaseSeeder::class);
 
@@ -128,10 +142,25 @@ class SeederConfigurationTest extends FormRequestTestCase
         $this->assertDatabaseCount('company_profiles', 1);
         $this->assertDatabaseCount('roles', 7);
         $this->assertDatabaseCount('leave_types', 4);
+        $this->assertDatabaseCount('divisions', 3);
+        $this->assertDatabaseCount('departments', 8);
+        $this->assertDatabaseCount('positions', 24);
+        $this->assertDatabaseCount('shifts', 5);
+        $this->assertDatabaseCount('work_schedules', 6);
+        $this->assertDatabaseCount('work_schedule_days', 42);
+        $this->assertDatabaseCount('employee_schedule_assignments', 0);
+        $this->assertDatabaseCount('holidays', 40);
         $this->assertSame($identity, [$administrator->id, $administrator->uuid]);
         $this->assertSame($roles, Role::query()->orderBy('code')->pluck('id', 'code')->all());
         $this->assertSame($permissions, Permission::query()->orderBy('code')->pluck('id', 'code')->all());
         $this->assertSame($leaveTypes, LeaveType::query()->orderBy('code')->pluck('id', 'code')->all());
+        $this->assertSame($divisions, Division::query()->orderBy('code')->pluck('id', 'code')->all());
+        $this->assertSame($departments, Department::query()->orderBy('code')->pluck('id', 'code')->all());
+        $this->assertSame($positions, Position::query()->orderBy('code')->pluck('id', 'code')->all());
+        $this->assertSame($shifts, Shift::query()->orderBy('code')->pluck('id', 'code')->all());
+        $this->assertSame($schedules, WorkSchedule::query()->orderBy('code')->pluck('id', 'code')->all());
+        $this->assertSame($scheduleDays, WorkScheduleDay::query()->orderBy('id')->pluck('id')->all());
+        $this->assertSame($holidays, Holiday::query()->orderBy('id')->pluck('id')->all());
         $this->assertSame(['super_admin'], $administrator->roles()->pluck('code')->all());
         $this->assertSame(array_keys($permissions), Role::query()->where('code', 'super_admin')->firstOrFail()->permissions()->orderBy('code')->pluck('code')->all());
         $this->assertTrue($administrator->hasPermission('organization.manage'));

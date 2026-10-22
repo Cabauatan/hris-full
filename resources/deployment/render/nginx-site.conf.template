@@ -1,0 +1,92 @@
+# Render's public edge owns CF-Connecting-IP. Pages cross-zone requests can
+# replace it, so only our secret-authenticated Worker may carry the original IP.
+# Neither request scheme/host nor arbitrary X-Forwarded-For is trusted.
+map $http_cf_connecting_ip $hris_render_client_ip {
+    default $remote_addr;
+    "~^__IP_PATTERN__$" $http_cf_connecting_ip;
+}
+map $http_x_hris_proxy_key $hris_worker_client_ip {
+    default "";
+    "__PROXY_KEY__" $http_x_hris_client_ip;
+}
+map $hris_worker_client_ip $hris_client_ip {
+    default $hris_render_client_ip;
+    "~^__IP_PATTERN__$" $hris_worker_client_ip;
+}
+
+server {
+    listen __PORT__ default_server;
+    server_name __BACKEND_HOST__;
+    root /var/www/html/public;
+
+    # Render terminates TLS before this private container port. Only the exact
+    # configured service host is accepted; request forwarding headers are ignored.
+    if ($host != __BACKEND_HOST__) { return 444; }
+    if ($uri ~ "(^|/)\.") { return 404; }
+
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options DENY always;
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+
+    location = /api { try_files /__hris_no_static_file__ @laravel; }
+    location ^~ /api/ {
+        if ($uri ~* "\.php(?:/|$)") { return 404; }
+        try_files /__hris_no_static_file__ @laravel;
+    }
+    location = /up { try_files /__hris_no_static_file__ @laravel; }
+
+    location @laravel {
+        fastcgi_param QUERY_STRING $query_string;
+        fastcgi_param REQUEST_METHOD $request_method;
+        fastcgi_param CONTENT_TYPE $content_type;
+        fastcgi_param CONTENT_LENGTH $content_length;
+        fastcgi_param REQUEST_URI $request_uri;
+        fastcgi_param DOCUMENT_URI $document_uri;
+        fastcgi_param SERVER_PROTOCOL $server_protocol;
+        fastcgi_param REQUEST_SCHEME https;
+        fastcgi_param GATEWAY_INTERFACE CGI/1.1;
+        fastcgi_param SERVER_SOFTWARE nginx;
+        fastcgi_param REMOTE_PORT $remote_port;
+        fastcgi_param SERVER_ADDR $server_addr;
+        fastcgi_param REDIRECT_STATUS 200;
+        fastcgi_param SCRIPT_FILENAME /var/www/html/public/index.php;
+        fastcgi_param DOCUMENT_ROOT /var/www/html/public;
+        fastcgi_param SCRIPT_NAME /index.php;
+        fastcgi_param HTTPS on;
+        fastcgi_param SERVER_PORT 443;
+        fastcgi_param HTTP_HOST __BACKEND_HOST__;
+        fastcgi_param SERVER_NAME __BACKEND_HOST__;
+        fastcgi_param HTTP_X_FORWARDED_PROTO https;
+        fastcgi_param HTTP_X_FORWARDED_HOST __BACKEND_HOST__;
+        fastcgi_param HTTP_X_FORWARDED_PORT 443;
+        fastcgi_param HTTP_X_FORWARDED_FOR "";
+        fastcgi_param HTTP_FORWARDED "";
+        fastcgi_param HTTP_X_HRIS_PROXY_KEY "";
+        fastcgi_param HTTP_X_HRIS_CLIENT_IP "";
+        fastcgi_param HTTP_PROXY "";
+        fastcgi_param REMOTE_ADDR $hris_client_ip;
+        fastcgi_pass 127.0.0.1:9000;
+        fastcgi_read_timeout 120s;
+        fastcgi_hide_header X-Powered-By;
+    }
+
+    location ^~ /app/ {
+        proxy_pass http://127.0.0.1:8082;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host __BACKEND_HOST__;
+        proxy_set_header Origin $http_origin;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 90s;
+        proxy_buffering off;
+    }
+
+    location = /apps { return 404; }
+    location ^~ /apps/ { return 404; }
+    location = /storage { return 404; }
+    location ^~ /storage/ { return 404; }
+    location ~* \.php(?:/|$) { return 404; }
+    location / { return 404; }
+}

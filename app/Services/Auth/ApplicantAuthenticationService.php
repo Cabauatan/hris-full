@@ -61,21 +61,23 @@ class ApplicantAuthenticationService
         abort_if($guard->check(), 409, 'You are already signed in as an applicant.');
 
         try {
-            if (! $guard->attemptWhen([
-                'email' => $credentials['email'],
-                'password' => $credentials['password'],
-                'is_active' => true,
-            ], fn (Applicant $applicant): bool => $this->sessions->reserve($request, $applicant, 'applicant', $credentials['password']), (bool) ($credentials['remember'] ?? false))) {
-                throw ValidationException::withMessages(['email' => __('auth.failed')]);
-            }
+            return DB::transaction(function () use ($request, $guard, $credentials): Applicant {
+                if (! $guard->attemptWhen([
+                    'email' => $credentials['email'],
+                    'password' => $credentials['password'],
+                    'is_active' => true,
+                ], fn (Applicant $applicant): bool => $this->sessions->reserve($applicant, $credentials['password']), (bool) ($credentials['remember'] ?? false))) {
+                    throw ValidationException::withMessages(['email' => __('auth.failed')]);
+                }
+
+                return $this->finishLogin($request, $credentials['password']);
+            }, 3);
         } catch (Throwable $exception) {
             $this->sessions->release($request, 'applicant', $guard->getLastAttempted());
             $this->sessions->discard($request, 'applicant');
 
             throw $exception;
         }
-
-        return $this->finishLogin($request, $credentials['password']);
     }
 
     public function logout(Request $request): void

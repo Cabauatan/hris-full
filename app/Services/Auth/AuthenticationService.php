@@ -28,17 +28,17 @@ class AuthenticationService
         abort_if($guard->check(), 409, 'You are already authenticated.');
 
         try {
-            if (! $guard->attemptWhen([
-                'password' => $credentials['password'],
-                'is_active' => true,
-                fn (Builder $query): Builder => $query->whereHas('employee', fn (Builder $employees): Builder => $employees
-                    ->where('employee_number', $credentials['employee_number'])
-                    ->where('is_active', true)),
-            ], fn (User $user): bool => $this->sessions->reserve($request, $user, 'web', $credentials['password']), (bool) ($credentials['remember'] ?? false))) {
-                throw ValidationException::withMessages(['employee_number' => __('auth.failed')]);
-            }
-
             $user = DB::transaction(function () use ($request, $guard, $credentials): User {
+                if (! $guard->attemptWhen([
+                    'password' => $credentials['password'],
+                    'is_active' => true,
+                    fn (Builder $query): Builder => $query->whereHas('employee', fn (Builder $employees): Builder => $employees
+                        ->where('employee_number', $credentials['employee_number'])
+                        ->where('is_active', true)),
+                ], fn (User $user): bool => $this->sessions->reserve($user, $credentials['password']), (bool) ($credentials['remember'] ?? false))) {
+                    throw ValidationException::withMessages(['employee_number' => __('auth.failed')]);
+                }
+
                 $user = User::query()->lockForUpdate()->findOrFail($guard->id());
                 $employee = $user->employee()->where('employee_number', $credentials['employee_number'])
                     ->where('is_active', true)->lockForUpdate()->first();
@@ -49,17 +49,16 @@ class AuthenticationService
 
                 $this->sessions->claim($request, $user, 'web');
                 $user->forceFill(['last_login_at' => now()])->save();
+                $this->refreshSession($request, $user);
 
                 return $user;
-            });
+            }, 3);
         } catch (Throwable $exception) {
             $this->sessions->release($request, 'web', $guard->getLastAttempted());
             $this->sessions->discard($request, 'web');
 
             throw $exception;
         }
-
-        $this->refreshSession($request, $user);
 
         return $this->context($user);
     }

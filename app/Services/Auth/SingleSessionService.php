@@ -2,6 +2,7 @@
 
 namespace App\Services\Auth;
 
+use App\Events\AccountSessionChanged;
 use App\Models\Applicant;
 use App\Models\User;
 use Illuminate\Http\Request;
@@ -13,16 +14,21 @@ use SensitiveParameter;
 
 class SingleSessionService
 {
-    public function reserve(Request $request, User|Applicant $account, string $guard, #[SensitiveParameter] string $password): bool
+    /** The caller must wrap reservation and login finalization in the same transaction. */
+    public function reserve(User|Applicant $account, #[SensitiveParameter] string $password): bool
     {
-        return DB::transaction(function () use ($request, $account, $guard, $password): bool {
+        return DB::transaction(function () use ($account, $password): bool {
             $locked = $account->newQuery()->lockForUpdate()->find($account->getKey());
 
             if ($locked === null || ! $locked->is_active || ! Hash::check($password, $locked->getAuthPassword())) {
                 return false;
             }
 
-            $this->claim($request, $locked, $guard);
+            if (is_string($locked->active_session_token)) {
+                $locked->forceFill(['remember_token' => Str::random(60)]);
+                $locked::withoutTimestamps(fn (): bool => $locked->saveQuietly());
+                $account->setRememberToken($locked->getRememberToken());
+            }
 
             return true;
         }, 3);
@@ -31,13 +37,14 @@ class SingleSessionService
     /** The caller must hold the account row lock inside a transaction. */
     public function claim(Request $request, User|Applicant $account, string $guard): void
     {
-        abort_if(
-            $this->isActive($account) && ! $this->owns($request, $account, $guard),
-            409,
-            'This account is already logged in on another device. Log out there first, or wait for that session to expire.',
-        );
+        $replacesSession = is_string($account->active_session_token) && ! $this->owns($request, $account, $guard);
 
         $this->assign($request, $account, $guard);
+
+        if ($replacesSession && config('broadcasting.default') === 'reverb') {
+            $accountId = (int) $account->getKey();
+            DB::afterCommit(static fn () => rescue(static fn () => AccountSessionChanged::dispatch($guard, $accountId)));
+        }
     }
 
     public function validate(Request $request, User|Applicant $account, string $guard): bool

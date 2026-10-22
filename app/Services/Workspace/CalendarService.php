@@ -18,7 +18,11 @@ class CalendarService
 
     private const EXPANSION_LIMIT = 20000;
 
-    public function __construct(private readonly WorkspaceReadScope $visibility, private readonly AttendanceCalculationService $attendance) {}
+    public function __construct(
+        private readonly WorkspaceReadScope $visibility,
+        private readonly AttendanceCalculationService $attendance,
+        private readonly BirthdayScope $birthdays,
+    ) {}
 
     /** @return array<string, mixed> */
     public function get(User $user, array $filters = []): array
@@ -132,7 +136,7 @@ class CalendarService
             $orderBindings[] = $index;
         }
 
-        $employees = $this->visibility->employees($user, $context['scope'])
+        $employees = $this->birthdays->calendarEmployees($user, $context['scope'])
             ->select(['id', 'first_name', 'last_name', 'employee_number', 'birth_date'])
             ->where('is_active', true)
             ->whereNotNull('birth_date')
@@ -233,7 +237,9 @@ class CalendarService
                 $day = $assignment->workSchedule->days->firstWhere('day_of_week', $date->isoWeekday());
 
                 if ($day === null || ($day->is_working_day && ($day->shift === null || ! $day->shift->is_active))) {
-                    $warnings[] = 'Schedule assignment '.$assignment->id.' has an incomplete or inactive shift configuration for '.$dateString.'.';
+                    $employee = $assignment->employee;
+                    $employeeLabel = $employee === null ? 'Employee unavailable' : trim($employee->first_name.' '.$employee->last_name).' ('.$employee->employee_number.')';
+                    $warnings[] = $assignment->workSchedule->name.' for '.$employeeLabel.' has an incomplete or inactive shift configuration for '.$dateString.'.';
 
                     continue;
                 }

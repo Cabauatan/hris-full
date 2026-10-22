@@ -10,6 +10,8 @@ use App\Models\Payslip;
 use App\Models\RecruitmentInterview;
 use App\Models\User;
 use App\Services\Approval\ApprovalAuthorityResolver;
+use App\Services\Workspace\BirthdayScope;
+use Carbon\CarbonImmutable;
 
 class HrisMessageService
 {
@@ -29,9 +31,13 @@ class HrisMessageService
         'applicant_exam_attempt' => ['assigned', 'result_ready'],
         'recruitment_interview' => ['scheduled', 'cancelled'],
         'user' => ['password_changed'],
+        'birthday' => ['birthday'],
     ];
 
-    public function __construct(private readonly ApprovalAuthorityResolver $authority) {}
+    public function __construct(
+        private readonly ApprovalAuthorityResolver $authority,
+        private readonly BirthdayScope $birthdays,
+    ) {}
 
     public function supports(string $type, string $event): bool
     {
@@ -44,6 +50,19 @@ class HrisMessageService
         $recipient = $recipient::query()->find($recipient->getKey());
         if ($recipient === null || ! $recipient->is_active || ! $this->supports($resourceType, $event)) {
             return null;
+        }
+        if ($resourceType === 'birthday') {
+            $today = CarbonImmutable::now(config('app.timezone'));
+
+            if (! $recipient instanceof User || $today->hour < 8 || $sourceVersion !== $today->toDateString()) {
+                return null;
+            }
+
+            $employee = $recipient->employee()->first();
+            $celebrant = $employee === null ? null : $this->birthdays->coworkers($employee)->find($resourceId);
+
+            return $celebrant !== null && $this->birthdays->matchesDate($celebrant, $today)
+                ? $this->birthdays->message($celebrant, $today) : null;
         }
         if (isset(NotificationService::RESOURCES[$resourceType])) {
             return $recipient instanceof User ? $this->employeeMessage($resourceType, $resourceId, $event, $sourceVersion, $recipient) : null;

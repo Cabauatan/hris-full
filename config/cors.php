@@ -19,11 +19,13 @@ return [
 
     'allowed_methods' => ['*'],
 
-    'allowed_origins' => array_values(array_unique([
+    'allowed_origins' => array_values(array_unique(array_filter([
         rtrim(env('FRONTEND_URL', 'http://127.0.0.1:5002'), '/'),
-        'http://127.0.0.1:5002',
-        'http://localhost:5002',
-    ])),
+        ...(env('APP_ENV', 'production') === 'production' ? [] : [
+            'http://127.0.0.1:5002',
+            'http://localhost:5002',
+        ]),
+    ]))),
 
     'allowed_origins_patterns' => [],
 

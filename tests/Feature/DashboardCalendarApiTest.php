@@ -544,7 +544,7 @@ class DashboardCalendarApiTest extends FormRequestTestCase
     public function test_invalid_working_shift_is_skipped_with_warning(bool $missing): void
     {
         $actor = $this->user('schedules.view');
-        $own = $this->employee($actor);
+        $own = $this->employee($actor, ['employee_number' => 'EMP-0001', 'first_name' => 'Marcel', 'last_name' => 'Cabauatan']);
         $assignment = $this->assignment($own, ['effective_from' => '2026-10-05']);
         $day = $assignment->workSchedule->days()->where('day_of_week', 1)->sole();
         if ($missing) {
@@ -555,7 +555,7 @@ class DashboardCalendarApiTest extends FormRequestTestCase
 
         $response = $this->actingAs($actor)->getJson($this->url('calendar', ['types' => ['schedule'], 'scope' => 'mine', 'start' => '2026-10-05', 'end' => '2026-10-05']))
             ->assertOk()->assertJsonPath('data.events', []);
-        $this->assertNotEmpty($response->json('data.meta.warnings'));
+        $this->assertContains('Test schedule for Marcel Cabauatan (EMP-0001) has an incomplete or inactive shift configuration for 2026-10-05.', $response->json('data.meta.warnings'));
     }
 
     public function test_calendar_at_exact_cap_is_not_truncated(): void

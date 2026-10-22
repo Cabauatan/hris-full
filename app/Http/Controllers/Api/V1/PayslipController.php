@@ -15,6 +15,7 @@ use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class PayslipController extends ApiController
@@ -60,6 +61,17 @@ class PayslipController extends ApiController
         Gate::authorize('view', $payslip);
         abort_unless($this->documents->ownsPath($payslip->file_path) && Storage::disk('local')->exists($payslip->file_path), 404);
 
-        return Storage::disk('local')->download($payslip->file_path, 'payslip-'.$payslip->id.'.html', ['Content-Type' => 'text/html; charset=UTF-8']);
+        $payslip->loadMissing([
+            'employee:id,employee_number', 'payrollEntry:id,payroll_run_id',
+            'payrollEntry.payrollRun:id,payroll_period_id,run_number', 'payrollEntry.payrollRun.payrollPeriod:id,code',
+        ]);
+        $run = $payslip->payrollEntry?->payrollRun;
+        $identity = implode('-', array_filter([
+            $payslip->employee?->employee_number, $run?->payrollPeriod?->code,
+            $run === null ? null : 'run-'.$run->run_number,
+        ]));
+        $filename = Str::slug('payslip-'.$identity).'.html';
+
+        return Storage::disk('local')->download($payslip->file_path, $filename, ['Content-Type' => 'text/html; charset=UTF-8']);
     }
 }

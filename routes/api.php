@@ -41,6 +41,7 @@ use App\Http\Controllers\Api\V1\SystemSettingController;
 use App\Http\Controllers\Api\V1\TelegramConnectionController;
 use App\Http\Controllers\Api\V1\TimeLogController;
 use App\Http\Controllers\Api\V1\TravelOrderRequestController;
+use App\Http\Controllers\Api\V1\UserLookupController;
 use App\Http\Controllers\Api\V1\WorkScheduleController;
 use App\Http\Controllers\Api\V1\WorkScheduleDayController;
 use App\Http\Middleware\EnsureUserIsActive;
@@ -76,6 +77,7 @@ Route::prefix('v1')->name('api.v1.')->middleware(['web', 'auth:web', 'auth.sessi
 
     Route::get('dashboard', DashboardController::class)->name('dashboard');
     Route::get('calendar', CalendarController::class)->name('calendar');
+    Route::get('lookups/users', [UserLookupController::class, 'index'])->name('lookups.users');
     Route::get('reports', [ReportController::class, 'index'])->name('reports.index');
     Route::get('reports/{report}/export', [ReportController::class, 'export'])->whereIn('report', array_keys(app(ReportService::class)->definitions()))->middleware('throttle:report-exports')->name('reports.export');
     Route::get('reports/{report}', [ReportController::class, 'show'])->whereIn('report', array_keys(app(ReportService::class)->definitions()))->name('reports.show');

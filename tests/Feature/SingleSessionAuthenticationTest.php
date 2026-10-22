@@ -2,18 +2,23 @@
 
 namespace Tests\Feature;
 
+use App\Events\AccountSessionChanged;
 use App\Models\Applicant;
 use App\Models\User;
+use Illuminate\Auth\Events\Login;
+use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Exceptions;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Testing\TestResponse;
 use PHPUnit\Framework\Attributes\TestWith;
+use RuntimeException;
 use Tests\FormRequestTestCase;
 
 class SingleSessionAuthenticationTest extends FormRequestTestCase
 {
     #[TestWith(['web'])]
     #[TestWith(['applicant'])]
-    public function test_second_browser_login_returns_409_without_displacing_first_browser(string $guard): void
+    public function test_second_browser_login_takes_over_and_returns_401_for_first_browser(string $guard): void
     {
         [$account, $credentials, $prefix] = $this->account($guard);
         $this->freezeTime();
@@ -22,18 +27,21 @@ class SingleSessionAuthenticationTest extends FormRequestTestCase
         $originalLease = $account->fresh()->active_session_token;
         $originalRememberToken = $account->fresh()->remember_token;
         $originalLogin = $account->fresh()->last_login_at;
+        $this->travel(1)->minutes();
         $this->useBrowserCookies([]);
 
-        $second = $this->postJson($prefix.'/login', $credentials + ['remember' => true])->assertConflict();
+        $second = $this->postJson($prefix.'/login', $credentials + ['remember' => true])->assertOk();
 
-        $this->assertGuest($guard);
+        $this->assertAuthenticatedAs($account, $guard);
         $this->assertNotEmpty($originalLease);
-        $this->assertSame($originalLease, $account->fresh()->active_session_token);
-        $this->assertSame($originalRememberToken, $account->fresh()->remember_token);
-        $this->assertTrue($originalLogin->equalTo($account->fresh()->last_login_at));
-        $this->useBrowserCookies($this->cookiesFrom($second));
-        $this->getJson($prefix.'/me')->assertUnauthorized();
+        $winningLease = $account->fresh()->active_session_token;
+        $this->assertNotSame($originalLease, $winningLease);
+        $this->assertNotSame($originalRememberToken, $account->fresh()->remember_token);
+        $this->assertTrue($account->fresh()->last_login_at->gt($originalLogin));
         $this->useBrowserCookies($firstCookies);
+        $this->getJson($prefix.'/me')->assertUnauthorized();
+        $this->assertSame($winningLease, $account->fresh()->active_session_token);
+        $this->useBrowserCookies($this->cookiesFrom($second));
         $this->getJson($prefix.'/me')->assertOk()->assertJsonPath('data.id', $account->id);
     }
 
@@ -42,8 +50,10 @@ class SingleSessionAuthenticationTest extends FormRequestTestCase
     public function test_wrong_password_returns_generic_422_when_account_has_active_session(string $guard): void
     {
         [$account, $credentials, $prefix] = $this->account($guard);
-        $first = $this->postJson($prefix.'/login', $credentials)->assertOk();
+        $first = $this->postJson($prefix.'/login', $credentials + ['remember' => true])->assertOk();
         $lease = $account->fresh()->active_session_token;
+        $remember = $account->fresh()->remember_token;
+        $lastLogin = $account->fresh()->last_login_at;
         $this->useBrowserCookies([]);
         $field = $guard === 'web' ? 'employee_number' : 'email';
 
@@ -52,13 +62,15 @@ class SingleSessionAuthenticationTest extends FormRequestTestCase
             ->assertJsonPath('errors.'.$field.'.0', __('auth.failed'));
 
         $this->assertSame($lease, $account->fresh()->active_session_token);
+        $this->assertSame($remember, $account->fresh()->remember_token);
+        $this->assertTrue($lastLogin->equalTo($account->fresh()->last_login_at));
         $this->useBrowserCookies($this->cookiesFrom($first));
         $this->getJson($prefix.'/me')->assertOk();
     }
 
     #[TestWith(['web'])]
     #[TestWith(['applicant'])]
-    public function test_blocked_login_returns_409_without_rehashing_password_or_invalidating_owner(string $guard): void
+    public function test_takeover_rehashes_password_without_old_session_releasing_new_owner(string $guard): void
     {
         config(['hashing.bcrypt.rounds' => 4]);
         Hash::forgetDrivers();
@@ -70,11 +82,205 @@ class SingleSessionAuthenticationTest extends FormRequestTestCase
         $this->assertTrue(Hash::needsRehash($originalHash));
         $this->useBrowserCookies([]);
 
-        $this->postJson($prefix.'/login', $credentials)->assertConflict();
+        $second = $this->postJson($prefix.'/login', $credentials + ['remember' => true])->assertOk();
 
-        $this->assertSame($originalHash, $account->fresh()->getAuthPassword());
+        $winningLease = $account->fresh()->active_session_token;
+        $winningRemember = $account->fresh()->remember_token;
+        $this->assertNotSame($originalHash, $account->fresh()->getAuthPassword());
+        $this->assertFalse(Hash::needsRehash($account->fresh()->getAuthPassword()));
+        $this->useBrowserCookies($this->cookiesFrom($first));
+        $this->getJson($prefix.'/me')->assertUnauthorized();
+        $this->assertSame($winningLease, $account->fresh()->active_session_token);
+        $this->assertSame($winningRemember, $account->fresh()->remember_token);
+        $this->useBrowserCookies($this->cookiesFrom($second));
+        $this->getJson($prefix.'/me')->assertOk();
+    }
+
+    #[TestWith(['web'])]
+    #[TestWith(['applicant'])]
+    public function test_displaced_browser_logout_does_not_release_or_change_new_owner(string $guard): void
+    {
+        [$account, $credentials, $prefix] = $this->account($guard);
+        $first = $this->postJson($prefix.'/login', $credentials + ['remember' => true])->assertOk();
+        $this->useBrowserCookies([]);
+        $second = $this->postJson($prefix.'/login', $credentials + ['remember' => true])->assertOk();
+        $winningLease = $account->fresh()->active_session_token;
+        $winningRemember = $account->fresh()->remember_token;
+        $this->useBrowserCookies($this->cookiesFrom($first));
+
+        $logout = $this->postJson($prefix.'/logout')->assertNoContent();
+
+        $this->assertSame($winningLease, $account->fresh()->active_session_token);
+        $this->assertSame($winningRemember, $account->fresh()->remember_token);
+        $this->useBrowserCookies($this->cookiesFrom($logout));
+        $this->getJson($prefix.'/me')->assertUnauthorized();
+        $this->useBrowserCookies($this->cookiesFrom($second));
+        $this->getJson($prefix.'/me')->assertOk()->assertJsonPath('data.id', $account->id);
+    }
+
+    #[TestWith(['web', 'logout'])]
+    #[TestWith(['applicant', 'logout'])]
+    #[TestWith(['web', 'expiration'])]
+    #[TestWith(['applicant', 'expiration'])]
+    public function test_old_remember_cookie_cannot_recover_after_winning_session_ends(string $guard, string $ending): void
+    {
+        config(['session.lifetime' => 5]);
+        $this->freezeTime();
+        [$account, $credentials, $prefix] = $this->account($guard);
+        $first = $this->postJson($prefix.'/login', $credentials + ['remember' => true])->assertOk();
+        $firstCookies = $this->cookiesFrom($first);
+        $recallerName = auth($guard)->getRecallerName();
+        $this->useBrowserCookies([]);
+        $second = $this->postJson($prefix.'/login', $credentials + ['remember' => true])->assertOk();
+        $secondCookies = $this->cookiesFrom($second);
+        $winningLease = $account->fresh()->active_session_token;
+
+        if ($ending === 'logout') {
+            $this->useBrowserCookies($secondCookies);
+            $this->postJson($prefix.'/logout')->assertNoContent();
+        } else {
+            $this->travel(6)->minutes();
+        }
+        $this->useBrowserCookies([$recallerName => $firstCookies[$recallerName]]);
+
+        $this->getJson($prefix.'/me')->assertUnauthorized();
+
+        if ($ending === 'logout') {
+            $this->assertNull($account->fresh()->active_session_token);
+        } else {
+            $this->assertSame($winningLease, $account->fresh()->active_session_token);
+            $this->useBrowserCookies([$recallerName => $secondCookies[$recallerName]]);
+            $this->getJson($prefix.'/me')->assertOk()->assertJsonPath('data.id', $account->id);
+            $this->assertNotSame($winningLease, $account->fresh()->active_session_token);
+        }
+    }
+
+    #[TestWith(['web'])]
+    #[TestWith(['applicant'])]
+    public function test_inactive_account_login_returns_422_without_changing_existing_ownership(string $guard): void
+    {
+        [$account, $credentials, $prefix] = $this->account($guard);
+        $first = $this->postJson($prefix.'/login', $credentials + ['remember' => true])->assertOk();
+        $original = $account->fresh();
+        $account->update(['is_active' => false]);
+        $this->useBrowserCookies([]);
+        $field = $guard === 'web' ? 'employee_number' : 'email';
+
+        $this->postJson($prefix.'/login', $credentials)->assertUnprocessable()
+            ->assertJsonValidationErrors($field)->assertJsonPath('errors.'.$field.'.0', __('auth.failed'));
+
+        $current = $account->fresh();
+        $this->assertSame($original->active_session_token, $current->active_session_token);
+        $this->assertSame($original->remember_token, $current->remember_token);
+        $this->assertTrue($original->last_login_at->equalTo($current->last_login_at));
+        $account->update(['is_active' => true]);
         $this->useBrowserCookies($this->cookiesFrom($first));
         $this->getJson($prefix.'/me')->assertOk();
+    }
+
+    #[TestWith(['web', 'saving'])]
+    #[TestWith(['applicant', 'saving'])]
+    #[TestWith(['web', 'login-event'])]
+    #[TestWith(['applicant', 'login-event'])]
+    public function test_failed_login_finalization_rolls_back_takeover_and_preserves_owner(string $guard, string $failure): void
+    {
+        $this->freezeTime();
+        [$account, $credentials, $prefix] = $this->account($guard);
+        $first = $this->postJson($prefix.'/login', $credentials + ['remember' => true])->assertOk();
+        $original = $account->fresh();
+        $this->travel(1)->minutes();
+        $interrupted = false;
+        if ($failure === 'saving') {
+            $account::saving(function (User|Applicant $saving) use ($account, &$interrupted): void {
+                if (! $interrupted && $saving->getKey() === $account->getKey() && $saving->isDirty('last_login_at')) {
+                    $interrupted = true;
+                    throw new RuntimeException('Login finalization failed.');
+                }
+            });
+        } else {
+            Event::listen(Login::class, function (Login $event) use ($account, $guard, &$interrupted): void {
+                if (! $interrupted && $event->guard === $guard && $event->user->getAuthIdentifier() === $account->getKey()) {
+                    $interrupted = true;
+                    throw new RuntimeException('Login finalization failed.');
+                }
+            });
+        }
+        config(['broadcasting.default' => 'reverb']);
+        Event::fake([AccountSessionChanged::class]);
+        $this->useBrowserCookies([]);
+
+        $failed = $this->postJson($prefix.'/login', $credentials + ['remember' => true])->assertInternalServerError();
+
+        $this->assertTrue($interrupted);
+        Exceptions::assertReported(fn (RuntimeException $exception): bool => $exception->getMessage() === 'Login finalization failed.');
+        Event::assertNotDispatched(AccountSessionChanged::class);
+        $current = $account->fresh();
+        $this->assertSame($original->active_session_token, $current->active_session_token);
+        $this->assertSame($original->remember_token, $current->remember_token);
+        $this->assertTrue($original->last_login_at->equalTo($current->last_login_at));
+        $this->useBrowserCookies($this->cookiesFrom($failed));
+        $this->getJson($prefix.'/me')->assertUnauthorized();
+        $this->useBrowserCookies($this->cookiesFrom($first));
+        $this->getJson($prefix.'/me')->assertOk()->assertJsonPath('data.id', $account->id);
+    }
+
+    #[TestWith(['web'])]
+    #[TestWith(['applicant'])]
+    public function test_takeover_broadcasts_only_committed_guard_change_on_private_account_channel(string $guard): void
+    {
+        [$account, $credentials, $prefix] = $this->account($guard);
+        config(['broadcasting.default' => 'reverb']);
+        Event::fake([AccountSessionChanged::class]);
+        $this->postJson($prefix.'/login', $credentials)->assertOk();
+        $this->useBrowserCookies([]);
+
+        $this->postJson($prefix.'/login', $credentials)->assertOk();
+
+        Event::assertDispatched(AccountSessionChanged::class, 1);
+        $event = Event::dispatched(AccountSessionChanged::class)->first()[0];
+        $this->assertSame($guard, $event->guard);
+        $this->assertSame($account->id, $event->accountId);
+        $model = $guard === 'web' ? 'User' : 'Applicant';
+        $this->assertSame('private-App.Models.'.$model.'.'.$account->id, $event->broadcastOn()[0]->name);
+        $this->assertSame('account.session.changed', $event->broadcastAs());
+        $this->assertSame('notifications', $event->broadcastQueue());
+        $this->assertSame(['guard' => $guard], $event->broadcastWith());
+    }
+
+    #[TestWith(['web'])]
+    #[TestWith(['applicant'])]
+    public function test_takeover_with_rehash_discards_only_displaced_guard_in_shared_browser(string $guard): void
+    {
+        config(['hashing.bcrypt.rounds' => 4]);
+        Hash::forgetDrivers();
+        [$staff, $employeeCredentials, $employeePrefix] = $this->account('web');
+        [$candidate, $applicantCredentials, $applicantPrefix] = $this->account('applicant');
+        $employeeLogin = $this->postJson($employeePrefix.'/login', $employeeCredentials + ['remember' => true])->assertOk();
+        $this->useBrowserCookies($this->cookiesFrom($employeeLogin));
+        $applicantLogin = $this->postJson($applicantPrefix.'/login', $applicantCredentials + ['remember' => true])->assertOk();
+        $sharedCookies = array_replace($this->cookiesFrom($employeeLogin), $this->cookiesFrom($applicantLogin));
+        [$account, $credentials, $prefix] = $guard === 'web'
+            ? [$staff, $employeeCredentials, $employeePrefix]
+            : [$candidate, $applicantCredentials, $applicantPrefix];
+        [$unrelated, $otherPrefix] = $guard === 'web'
+            ? [$candidate, $applicantPrefix]
+            : [$staff, $employeePrefix];
+        $otherLease = $unrelated->fresh()->active_session_token;
+        config(['hashing.bcrypt.rounds' => 5]);
+        Hash::forgetDrivers();
+        $this->useBrowserCookies([]);
+        $winner = $this->postJson($prefix.'/login', $credentials + ['remember' => true])->assertOk();
+        $winningLease = $account->fresh()->active_session_token;
+        $this->useBrowserCookies($sharedCookies);
+
+        $displaced = $this->getJson($prefix.'/me')->assertUnauthorized();
+
+        $this->assertSame($winningLease, $account->fresh()->active_session_token);
+        $this->assertSame($otherLease, $unrelated->fresh()->active_session_token);
+        $this->useBrowserCookies(array_replace($sharedCookies, $this->cookiesFrom($displaced)));
+        $this->getJson($otherPrefix.'/me')->assertOk()->assertJsonPath('data.id', $unrelated->id);
+        $this->useBrowserCookies($this->cookiesFrom($winner));
+        $this->getJson($prefix.'/me')->assertOk()->assertJsonPath('data.id', $account->id);
     }
 
     #[TestWith(['web'])]
@@ -138,13 +344,12 @@ class SingleSessionAuthenticationTest extends FormRequestTestCase
         $renewed = $this->getJson($prefix.'/me')->assertOk();
         $this->assertSame(now()->format('Y-m-d H:i:s'), $account->fresh()->active_session_last_activity_at->format('Y-m-d H:i:s'));
         $this->travel(2)->minutes();
-        $this->useBrowserCookies([]);
+        $this->useBrowserCookies($this->cookiesFrom($renewed));
 
-        $this->postJson($prefix.'/login', $credentials)->assertConflict();
+        $this->getJson($prefix.'/me')->assertOk();
 
         $this->assertSame($firstLease, $account->fresh()->active_session_token);
-        $this->useBrowserCookies($this->cookiesFrom($renewed));
-        $this->getJson($prefix.'/me')->assertOk();
+        $this->assertSame(now()->format('Y-m-d H:i:s'), $account->fresh()->active_session_last_activity_at->format('Y-m-d H:i:s'));
     }
 
     #[TestWith(['web'])]
@@ -228,7 +433,11 @@ class SingleSessionAuthenticationTest extends FormRequestTestCase
         $this->useBrowserCookies($this->cookiesFrom($restored));
         $this->getJson($prefix.'/me')->assertOk();
         $this->useBrowserCookies([]);
-        $this->postJson($prefix.'/login', $credentials)->assertConflict();
+        $next = $this->postJson($prefix.'/login', $credentials)->assertOk();
+        $this->useBrowserCookies($this->cookiesFrom($restored));
+        $this->getJson($prefix.'/me')->assertUnauthorized();
+        $this->useBrowserCookies($this->cookiesFrom($next));
+        $this->getJson($prefix.'/me')->assertOk();
     }
 
     #[TestWith(['web'])]
@@ -259,7 +468,7 @@ class SingleSessionAuthenticationTest extends FormRequestTestCase
         $this->getJson($prefix.'/me')->assertOk();
     }
 
-    public function test_applicant_registration_claims_a_session_and_second_login_returns_409(): void
+    public function test_applicant_login_takes_over_the_registration_session(): void
     {
         $registration = $this->postJson('/api/v1/applicant/auth/register', [
             'first_name' => 'External', 'last_name' => 'Candidate', 'email' => 'registered@example.test',
@@ -269,9 +478,12 @@ class SingleSessionAuthenticationTest extends FormRequestTestCase
         $this->assertNotEmpty($account->active_session_token);
         $this->useBrowserCookies([]);
 
-        $this->postJson('/api/v1/applicant/auth/login', ['email' => $account->email, 'password' => 'applicant-password'])->assertConflict();
+        $login = $this->postJson('/api/v1/applicant/auth/login', ['email' => $account->email, 'password' => 'applicant-password'])->assertOk();
 
+        $this->assertNotSame($account->active_session_token, $account->fresh()->active_session_token);
         $this->useBrowserCookies($this->cookiesFrom($registration));
+        $this->getJson('/api/v1/applicant/auth/me')->assertUnauthorized();
+        $this->useBrowserCookies($this->cookiesFrom($login));
         $this->getJson('/api/v1/applicant/auth/me')->assertOk();
     }
 
@@ -297,12 +509,10 @@ class SingleSessionAuthenticationTest extends FormRequestTestCase
         $this->useBrowserCookies($this->cookiesFrom($logout));
         $this->getJson($applicantPrefix.'/me')->assertUnauthorized();
         $this->useBrowserCookies([]);
-        $this->postJson($employeePrefix.'/login', $employeeCredentials)->assertConflict();
-        $this->useBrowserCookies([]);
         $this->postJson($applicantPrefix.'/login', $applicantCredentials)->assertOk();
     }
 
-    public function test_blocked_applicant_login_preserves_employee_session_in_same_browser(): void
+    public function test_applicant_takeover_preserves_employee_session_in_same_browser(): void
     {
         [$candidate, $applicantCredentials, $applicantPrefix] = $this->account('applicant');
         $applicantLogin = $this->postJson($applicantPrefix.'/login', $applicantCredentials)->assertOk();
@@ -313,14 +523,18 @@ class SingleSessionAuthenticationTest extends FormRequestTestCase
         $employeeLease = $staff->fresh()->active_session_token;
         $this->useBrowserCookies($this->cookiesFrom($employeeLogin));
 
-        $blocked = $this->postJson($applicantPrefix.'/login', $applicantCredentials)->assertConflict();
+        $takeover = $this->postJson($applicantPrefix.'/login', $applicantCredentials)->assertOk();
 
         $this->assertSame($employeeLease, $staff->fresh()->active_session_token);
-        $this->assertSame($applicantLease, $candidate->fresh()->active_session_token);
-        $this->useBrowserCookies($this->cookiesFrom($blocked));
+        $this->assertNotSame($applicantLease, $candidate->fresh()->active_session_token);
+        $winningLease = $candidate->fresh()->active_session_token;
+        $this->useBrowserCookies($this->cookiesFrom($takeover));
         $this->getJson($employeePrefix.'/me')->assertOk();
-        $this->useBrowserCookies($this->cookiesFrom($applicantLogin));
+        $this->useBrowserCookies($this->cookiesFrom($takeover));
         $this->getJson($applicantPrefix.'/me')->assertOk();
+        $this->useBrowserCookies($this->cookiesFrom($applicantLogin));
+        $this->getJson($applicantPrefix.'/me')->assertUnauthorized();
+        $this->assertSame($winningLease, $candidate->fresh()->active_session_token);
     }
 
     public function test_employee_logout_releases_both_guard_leases_when_shared_browser_session_is_invalidated(): void
@@ -463,7 +677,11 @@ class SingleSessionAuthenticationTest extends FormRequestTestCase
         $this->useBrowserCookies($newCookies);
         $this->getJson($applicantPrefix.'/me')->assertOk();
         $this->useBrowserCookies([]);
-        $this->postJson($employeePrefix.'/login', array_replace($credentials, ['password' => 'replacement-password']))->assertConflict();
+        $takeover = $this->postJson($employeePrefix.'/login', array_replace($credentials, ['password' => 'replacement-password']))->assertOk();
+        $this->useBrowserCookies($newCookies);
+        $this->getJson($employeePrefix.'/me')->assertUnauthorized();
+        $this->useBrowserCookies($this->cookiesFrom($takeover));
+        $this->getJson($employeePrefix.'/me')->assertOk();
     }
 
     /** @return array{0: User|Applicant, 1: array<string, string>, 2: string} */

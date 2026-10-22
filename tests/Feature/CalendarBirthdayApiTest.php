@@ -2,7 +2,11 @@
 
 namespace Tests\Feature;
 
+use App\Models\Department;
+use App\Models\Division;
+use App\Models\Position;
 use App\Policies\WorkspacePolicy;
+use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\TestWith;
 use Tests\FormRequestTestCase;
 
@@ -61,6 +65,99 @@ class CalendarBirthdayApiTest extends FormRequestTestCase
 
         $this->actingAs($actor)->getJson($this->url(['scope' => 'visible']))->assertOk()
             ->assertJsonCount(1, 'data.events')->assertJsonPath('data.events.0.employee.id', $own->id);
+    }
+
+    public function test_visible_birthdays_include_coworkers_with_another_position_in_the_same_department(): void
+    {
+        $actor = $this->user();
+        $department = $this->department();
+        $own = $this->employee($actor, ['position_id' => $this->position($department)->id, 'birth_date' => '1990-10-01']);
+        $coworker = $this->employee(null, ['position_id' => $this->position($department)->id, 'birth_date' => '1995-10-02']);
+        $this->employee(null, ['position_id' => $this->position($this->department())->id, 'birth_date' => '1995-10-03']);
+
+        $this->actingAs($actor)->getJson($this->url(['scope' => 'visible']))->assertOk()
+            ->assertJsonCount(2, 'data.events')->assertJsonPath('data.events.0.employee.id', $own->id)
+            ->assertJsonPath('data.events.1.employee.id', $coworker->id);
+
+        $this->getJson('/api/v1/employees/'.$coworker->id)->assertForbidden();
+    }
+
+    public function test_visible_birthdays_include_coworkers_in_another_department_of_the_same_active_division(): void
+    {
+        $actor = $this->user();
+        $division = Division::query()->create(['code' => 'OPERATIONS', 'name' => 'Operations', 'is_active' => true]);
+        $own = $this->employee($actor, ['position_id' => $this->position($this->department($division))->id, 'birth_date' => '1990-10-01']);
+        $coworker = $this->employee(null, ['position_id' => $this->position($this->department($division))->id, 'birth_date' => '1995-10-02']);
+        $this->employee(null, ['position_id' => $this->position($this->department())->id, 'birth_date' => '1995-10-03']);
+
+        $this->actingAs($actor)->getJson($this->url(['scope' => 'visible']))->assertOk()
+            ->assertJsonCount(2, 'data.events')->assertJsonPath('data.events.0.employee.id', $own->id)
+            ->assertJsonPath('data.events.1.employee.id', $coworker->id);
+    }
+
+    public function test_my_calendar_keeps_only_my_birthday_even_with_department_coworkers(): void
+    {
+        $actor = $this->user();
+        $position = $this->position($this->department());
+        $own = $this->employee($actor, ['position_id' => $position->id, 'birth_date' => '1990-10-01']);
+        $this->employee(null, ['position_id' => $position->id, 'birth_date' => '1995-10-02']);
+
+        $this->actingAs($actor)->getJson($this->url(['scope' => 'mine']))->assertOk()
+            ->assertJsonCount(1, 'data.events')->assertJsonPath('data.events.0.employee.id', $own->id);
+    }
+
+    public function test_visible_birthdays_omit_inactive_and_missing_coworker_hierarchies(): void
+    {
+        $actor = $this->user();
+        $division = Division::query()->create(['code' => 'OPERATIONS', 'name' => 'Operations', 'is_active' => true]);
+        $department = $this->department($division);
+        $position = $this->position($department);
+        $own = $this->employee($actor, ['position_id' => $position->id, 'birth_date' => '1990-10-01']);
+        $this->employee(null, ['position_id' => $position->id, 'birth_date' => '1990-10-02', 'is_active' => false]);
+        $this->employee(null, ['position_id' => $this->position($department, ['is_active' => false])->id, 'birth_date' => '1990-10-03']);
+        $this->employee(null, ['position_id' => $this->position($this->department($division, ['is_active' => false]))->id, 'birth_date' => '1990-10-04']);
+        $this->employee(null, ['position_id' => $this->position()->id, 'birth_date' => '1990-10-05']);
+        $this->employee(null, ['birth_date' => '1990-10-06']);
+
+        $this->actingAs($actor)->getJson($this->url(['scope' => 'visible']))->assertOk()
+            ->assertJsonCount(1, 'data.events')->assertJsonPath('data.events.0.employee.id', $own->id);
+    }
+
+    public function test_inactive_division_does_not_share_birthdays_across_departments(): void
+    {
+        $actor = $this->user();
+        $division = Division::query()->create(['code' => 'OPERATIONS', 'name' => 'Operations', 'is_active' => false]);
+        $department = $this->department($division);
+        $own = $this->employee($actor, ['position_id' => $this->position($department)->id, 'birth_date' => '1990-10-01']);
+        $sameDepartment = $this->employee(null, ['position_id' => $this->position($department)->id, 'birth_date' => '1990-10-02']);
+        $this->employee(null, ['position_id' => $this->position($this->department($division))->id, 'birth_date' => '1990-10-03']);
+
+        $this->actingAs($actor)->getJson($this->url(['scope' => 'visible']))->assertOk()
+            ->assertJsonCount(2, 'data.events')->assertJsonPath('data.events.0.employee.id', $own->id)
+            ->assertJsonPath('data.events.1.employee.id', $sameDepartment->id);
+    }
+
+    #[TestWith(['position', 1])]
+    #[TestWith(['department', 1])]
+    #[TestWith(['employee', 0])]
+    #[TestWith(['missing_department', 1])]
+    public function test_ineligible_viewer_hierarchy_does_not_expand_birthday_visibility(string $inactive, int $count): void
+    {
+        $actor = $this->user();
+        $division = Division::query()->create(['code' => 'OPERATIONS', 'name' => 'Operations', 'is_active' => true]);
+        $department = $this->department($division);
+        $position = $this->position($department);
+        $own = $this->employee($actor, ['position_id' => $position->id, 'birth_date' => '1990-10-01']);
+        $this->employee(null, ['position_id' => $this->position($this->department($division))->id, 'birth_date' => '1990-10-02']);
+        match ($inactive) {
+            'position' => $position->update(['is_active' => false]),
+            'department' => $department->update(['is_active' => false]),
+            'employee' => $own->update(['is_active' => false]),
+            'missing_department' => $position->update(['department_id' => null]),
+        };
+
+        $this->actingAs($actor)->getJson($this->url(['scope' => 'visible']))->assertOk()
+            ->assertJsonCount($count, 'data.events');
     }
 
     public function test_unlinked_account_without_employee_read_permission_cannot_select_birthdays(): void
@@ -164,5 +261,19 @@ class CalendarBirthdayApiTest extends FormRequestTestCase
         return '/api/v1/calendar?'.http_build_query(array_replace([
             'start' => '2026-10-01', 'end' => '2026-10-31', 'types' => ['birthday'],
         ], $query));
+    }
+
+    private function department(?Division $division = null, array $attributes = []): Department
+    {
+        return Department::query()->create(array_replace([
+            'division_id' => $division?->id, 'code' => (string) Str::uuid(), 'name' => 'Test department', 'is_active' => true,
+        ], $attributes));
+    }
+
+    private function position(?Department $department = null, array $attributes = []): Position
+    {
+        return Position::query()->create(array_replace([
+            'department_id' => $department?->id, 'code' => (string) Str::uuid(), 'name' => 'Test position', 'is_active' => true,
+        ], $attributes));
     }
 }

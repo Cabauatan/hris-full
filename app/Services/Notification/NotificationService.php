@@ -6,6 +6,7 @@ use App\Jobs\DeliverHrisNotification;
 use App\Models\Announcement;
 use App\Models\AttendanceCorrectionRequest;
 use App\Models\CtoRequest;
+use App\Models\Employee;
 use App\Models\EmployeeProfileChangeRequest;
 use App\Models\LeaveRequest;
 use App\Models\OfficialBusinessRequest;
@@ -15,11 +16,14 @@ use App\Models\TravelOrderRequest;
 use App\Models\User;
 use App\Notifications\HrisNotification;
 use App\Services\Approval\ApprovalAuthorityResolver;
+use App\Services\Workspace\BirthdayScope;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Notifications\DatabaseNotification;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 use Ramsey\Uuid\Uuid;
+use Throwable;
 
 class NotificationService
 {
@@ -49,6 +53,7 @@ class NotificationService
     public function __construct(
         private readonly ApprovalAuthorityResolver $authority,
         private readonly OutboundNotificationService $updates,
+        private readonly BirthdayScope $birthdays,
     ) {}
 
     public function queue(Model $record, string $event): void
@@ -145,12 +150,24 @@ class NotificationService
             $data = is_array($notification->data) ? $notification->data : [];
             $type = is_string($data['resource_type'] ?? null) ? $data['resource_type'] : '';
             $id = filter_var($data['resource_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
-            if ($notification->type === HrisNotification::class && isset(self::RESOURCES[$type]) && $id !== false) {
+            if ($notification->type === HrisNotification::class && (isset(self::RESOURCES[$type]) || $type === 'birthday') && $id !== false) {
                 $ids[$type][] = $id;
                 $this->presentationRecords[$type.':'.$id] = null;
             }
         }
         foreach ($ids as $type => $resourceIds) {
+            if ($type === 'birthday') {
+                $employee = $user->employee()->first();
+
+                if ($user->is_active && $employee !== null) {
+                    foreach ($this->birthdays->coworkers($employee)->whereKey(array_unique($resourceIds))->get() as $record) {
+                        $this->presentationRecords[$type.':'.$record->getKey()] = $record;
+                    }
+                }
+
+                continue;
+            }
+
             $class = self::RESOURCES[$type]['class'];
             $query = $class::query()->whereKey(array_unique($resourceIds));
             if (! in_array($type, ['announcement', 'payslip', 'profile_changes'], true)) {
@@ -167,6 +184,11 @@ class NotificationService
     {
         $data = is_array($notification->data) ? $notification->data : [];
         $type = is_string($data['resource_type'] ?? null) ? $data['resource_type'] : '';
+
+        if ($notification->type === HrisNotification::class && $type === 'birthday') {
+            return $this->presentBirthday($user, $notification, $data);
+        }
+
         $definition = self::RESOURCES[$type] ?? null;
         $event = is_string($data['event'] ?? null) && in_array($data['event'], ['pending', 'approved', 'rejected', 'cancelled', 'applied', 'published'], true) ? $data['event'] : null;
         $id = filter_var($data['resource_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
@@ -200,6 +222,54 @@ class NotificationService
             'created_at' => $notification->created_at?->toIso8601String(),
             'read_at' => $notification->read_at?->toIso8601String(),
             'source' => $source,
+        ];
+    }
+
+    /** @param array<string, mixed> $data
+     * @return array<string, mixed>
+     */
+    private function presentBirthday(User $user, DatabaseNotification $notification, array $data): array
+    {
+        $message = null;
+        $id = filter_var($data['resource_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        $occurredAt = $data['occurred_at'] ?? null;
+
+        if ($user->is_active && ($data['event'] ?? null) === 'birthday' && $id !== false
+            && is_string($occurredAt) && preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})$/D', $occurredAt)) {
+            $record = null;
+
+            if ($this->presentationUserId === $user->id && array_key_exists('birthday:'.$id, $this->presentationRecords)) {
+                $record = $this->presentationRecords['birthday:'.$id];
+            } else {
+                $employee = $user->employee()->first();
+
+                if ($employee !== null) {
+                    $record = $this->birthdays->coworkers($employee)->find($id);
+                }
+            }
+
+            try {
+                $timestamp = CarbonImmutable::parse($occurredAt);
+                $normalized = str_ends_with($occurredAt, 'Z') ? substr($occurredAt, 0, -1).'+00:00' : $occurredAt;
+                $date = $timestamp->setTimezone(config('app.timezone'))->startOfDay();
+
+                if ($timestamp->toIso8601String() === $normalized && $record instanceof Employee
+                    && ! $date->isFuture() && $this->birthdays->matchesDate($record, $date)) {
+                    $message = $this->birthdays->message($record, $date);
+                }
+            } catch (Throwable) {
+                $message = null;
+            }
+        }
+
+        return [
+            'id' => $notification->id,
+            'title' => $message['title'] ?? 'HRIS update',
+            'message' => $message['message'] ?? 'This record is no longer available to your account.',
+            'category' => 'birthday', 'event' => 'birthday',
+            'created_at' => $notification->created_at?->toIso8601String(),
+            'read_at' => $notification->read_at?->toIso8601String(),
+            'source' => $message === null ? null : ['module' => 'calendar', 'scope' => 'visible'],
         ];
     }
 }

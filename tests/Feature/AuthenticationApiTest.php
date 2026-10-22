@@ -258,13 +258,13 @@ class AuthenticationApiTest extends FormRequestTestCase
         $this->assertTrue($interrupted);
         $this->assertNull($user->fresh()->last_login_at);
         $this->assertGuest();
-        $this->assertTrue(Hash::check('changed-during-login', $user->fresh()->password));
+        $this->assertTrue(Hash::check('password', $user->fresh()->password));
         $this->useBrowserCookies($this->cookiesFrom($rejected));
         $this->getJson('/api/v1/auth/me')->assertUnauthorized();
         $this->useBrowserCookies([]);
         $this->postJson('/api/v1/auth/login', [
             'employee_number' => $this->employeeNumber($user),
-            'password' => 'changed-during-login',
+            'password' => 'password',
         ])->assertOk()->assertJsonPath('data.id', $user->id);
         $this->assertAuthenticatedAs($user);
     }
@@ -292,7 +292,7 @@ class AuthenticationApiTest extends FormRequestTestCase
         $response->assertUnprocessable()->assertJsonValidationErrors('employee_number')
             ->assertJsonPath('errors.employee_number.0', 'These credentials do not match our records.');
         $this->assertTrue($interrupted);
-        $this->assertFalse($user->fresh()->is_active);
+        $this->assertTrue($user->fresh()->is_active);
         $this->assertNull($user->fresh()->last_login_at);
         $this->assertGuest();
         $this->useBrowserCookies($this->cookiesFrom($response));

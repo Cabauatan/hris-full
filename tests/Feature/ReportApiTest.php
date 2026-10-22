@@ -104,6 +104,8 @@ class ReportApiTest extends FormRequestTestCase
             $this->assertTrue($descriptor['can_export']);
             foreach ($descriptor['columns'] as $column) {
                 $this->assertSame(['key', 'label', 'type'], array_keys($column));
+                $this->assertNotSame('id', $column['key']);
+                $this->assertFalse(str_ends_with($column['key'], '_id'));
             }
         }
     }
@@ -341,8 +343,13 @@ class ReportApiTest extends FormRequestTestCase
         $this->entry($this->payrollRun(['status' => 'draft']), $this->employee());
         $this->entry($this->payrollRun(['status' => 'finalized'], ['period_start' => '2026-09-01', 'period_end' => '2026-09-30']), $this->employee());
 
-        $this->actingAs($actor)->getJson($this->url('payroll', ['start' => '2026-10-01', 'end' => '2026-10-01', 'status' => 'finalized', 'payroll_run_id' => $run->id]))->assertOk()
+        $response = $this->actingAs($actor)->getJson($this->url('payroll', ['start' => '2026-10-01', 'end' => '2026-10-01', 'status' => 'finalized', 'payroll_run_id' => $run->id]))->assertOk()
             ->assertJsonCount(1, 'data.rows')->assertJsonPath('data.rows.0.id', $wanted->id)->assertJsonPath('data.rows.0.status', 'finalized')->assertJsonPath('data.rows.0.entry_status', 'calculated');
+        $columns = array_column($response->json('data.report.columns'), 'key');
+        $this->assertNotContains('id', $columns);
+        $this->assertNotContains('payroll_run_id', $columns);
+        $this->assertContains('run_number', $columns);
+        $this->assertContains('period_code', $columns);
         $this->getJson($this->url('payroll', ['payroll_run_id' => 987654321]))->assertOk()->assertJsonPath('data.rows', []);
     }
 
@@ -438,7 +445,8 @@ class ReportApiTest extends FormRequestTestCase
         $this->assertStringContainsString('attachment;', $download->headers->get('Content-Disposition'));
         $csv = $this->csv($download);
         $this->assertSame(array_column($preview->json('data.report.columns'), 'label'), $csv[0]);
-        $this->assertSame([(string) $first->id, (string) $second->id], array_column(array_slice($csv, 1), 0));
+        $this->assertSame([$own->employee_number, $own->employee_number], array_column(array_slice($csv, 1), 0));
+        $this->assertNotContains('Record ID', $csv[0]);
         $approvedColumn = array_search('Approved days', $csv[0], true);
         $this->assertSame('1.25', $csv[1][$approvedColumn]);
         $this->assertSame('', $csv[2][$approvedColumn]);
@@ -452,10 +460,10 @@ class ReportApiTest extends FormRequestTestCase
         $this->employee(null, ['employee_number' => '+2', 'first_name' => " José,\"María\"\nLine ", 'last_name' => 'Santos']);
 
         $csv = $this->csv($this->actingAs($actor)->getJson($this->url('employees', [], true))->assertOk());
-        $this->assertSame("'=1+1", $csv[1][1]);
-        $this->assertSame("'@SUM(1,1) Reyes", $csv[1][2]);
-        $this->assertSame("'+2", $csv[2][1]);
-        $this->assertSame("José,\"María\"\nLine  Santos", $csv[2][2]);
+        $this->assertSame("'=1+1", $csv[1][0]);
+        $this->assertSame("'@SUM(1,1) Reyes", $csv[1][1]);
+        $this->assertSame("'+2", $csv[2][0]);
+        $this->assertSame("José,\"María\"\nLine  Santos", $csv[2][1]);
     }
 
     #[TestWith(['=1+1'])]
@@ -472,7 +480,7 @@ class ReportApiTest extends FormRequestTestCase
         $this->employee(null, ['employee_number' => $value]);
 
         $csv = $this->csv($this->actingAs($actor)->getJson($this->url('employees', [], true))->assertOk());
-        $this->assertSame("'".$value, $csv[1][1]);
+        $this->assertSame("'".$value, $csv[1][0]);
     }
 
     public function test_csv_preserves_numeric_negative_decimal_instead_of_treating_it_as_text_formula(): void
@@ -527,8 +535,8 @@ class ReportApiTest extends FormRequestTestCase
 
         $csv = $this->csv($this->actingAs($actor)->getJson($this->url('employees', [], true))->assertOk());
         $this->assertCount(506, $csv);
-        $this->assertSame('CHUNK-1', $csv[1][1]);
-        $this->assertSame('CHUNK-505', $csv[505][1]);
+        $this->assertSame('CHUNK-1', $csv[1][0]);
+        $this->assertSame('CHUNK-505', $csv[505][0]);
         $this->assertCount(505, array_unique(array_column(array_slice($csv, 1), 0)));
     }
 

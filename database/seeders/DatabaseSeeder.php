@@ -14,6 +14,9 @@ class DatabaseSeeder extends Seeder
             AdminUserSeeder::class,
             LeaveTypeSeeder::class,
             CompanyProfileSeeder::class,
+            PositionSeeder::class,
+            WorkScheduleSeeder::class,
+            PhilippineHolidaySeeder::class,
         ]);
     }
 }

@@ -1,0 +1,11 @@
+# Temporary HTTP-only site for FIRST certificate issuance, before nginx.conf.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name {{DOMAIN}};
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/letsencrypt;
+        try_files $uri =404;
+    }
+    location / { return 503; }
+}

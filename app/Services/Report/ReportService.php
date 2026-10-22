@@ -25,7 +25,7 @@ class ReportService
     /** @return array<string, array<string, mixed>> */
     public function definitions(): array
     {
-        $identity = ['id' => ['Record ID', 'integer'], 'employee_number' => ['Employee number', 'text'], 'employee_name' => ['Employee', 'text']];
+        $identity = ['employee_number' => ['Employee number', 'text'], 'employee_name' => ['Employee', 'text']];
         $definitions = [
             'employees' => $this->makeDefinition('Employee roster', 'Current employment and organization details.', Employee::class, ['employees.view', 'employees.view-team'], 'snapshot', null, ['active', 'inactive'], false, $identity + [
                 'position' => ['Position', 'text'], 'department' => ['Department', 'text'], 'division' => ['Division', 'text'], 'hire_date' => ['Hire date', 'date'],
@@ -45,7 +45,7 @@ class ReportService
             ]),
             'payroll' => $this->makeDefinition('Payroll register', 'Payroll entries in overlapping coverage periods. Totals are grouped by currency.', PayrollEntry::class, ['payroll.view'], 'payroll', 'Payroll coverage overlap', ['draft', 'processing', 'completed', 'finalized'], false, $identity + [
                 'period_code' => ['Period', 'text'], 'period_start' => ['Coverage start', 'date'], 'period_end' => ['Coverage end', 'date'], 'pay_date' => ['Pay date', 'date'],
-                'payroll_run_id' => ['Run ID', 'integer'], 'run_number' => ['Run number', 'integer'], 'status' => ['Run status', 'text'], 'entry_status' => ['Entry status', 'text'],
+                'run_number' => ['Run number', 'integer'], 'status' => ['Run status', 'text'], 'entry_status' => ['Entry status', 'text'],
                 'currency' => ['Currency', 'text'], 'basic_salary' => ['Basic salary', 'decimal'], 'gross_pay' => ['Gross pay', 'decimal'],
                 'total_deductions' => ['Deductions', 'decimal'], 'net_pay' => ['Net pay', 'decimal'],
             ]),
@@ -229,7 +229,12 @@ class ReportService
             $values += ['period_code' => $period?->code, 'period_start' => $period?->period_start?->toDateString(), 'period_end' => $period?->period_end?->toDateString(), 'pay_date' => $period?->pay_date?->toDateString(), 'run_number' => $record->payrollRun?->run_number, 'status' => $record->payrollRun?->status, 'entry_status' => $record->status];
         }
 
-        $row = [];
+        $row = ['id' => $record->id];
+
+        if ($record instanceof PayrollEntry) {
+            $row['payroll_run_id'] = $record->payroll_run_id;
+        }
+
         foreach ($definition['columns'] as $column) {
             $key = $column['key'];
             if (array_key_exists($key, $values)) {

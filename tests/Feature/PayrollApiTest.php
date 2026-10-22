@@ -20,6 +20,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\TestWith;
 use Tests\FormRequestTestCase;
 
 class PayrollApiTest extends FormRequestTestCase
@@ -581,6 +582,25 @@ class PayrollApiTest extends FormRequestTestCase
 
         $this->assertDatabaseCount('payslips', 0);
         $this->assertCount(0, Storage::disk('local')->allFiles('payslips'));
+    }
+
+    #[TestWith(['EMP-0001', 'OCT-2026', 'payslip-emp-0001-oct-2026-run-4.html'])]
+    #[TestWith(['EMP/0001', 'OCT:2026', 'payslip-emp0001-oct2026-run-4.html'])]
+    public function test_payslip_download_uses_safe_employee_period_and_business_run_filename(string $employeeNumber, string $periodCode, string $filename): void
+    {
+        Storage::fake('local');
+        $owner = $this->user('payslips.view');
+        $employee = $this->employee($owner, ['employee_number' => $employeeNumber]);
+        $payslip = $this->payslip($employee);
+        $run = $payslip->payrollEntry->payrollRun;
+        $run->update(['run_number' => 4]);
+        $run->payrollPeriod->update(['code' => $periodCode]);
+        Storage::disk('local')->put($payslip->file_path, '<html>Private payslip</html>');
+
+        $this->actingAs($owner)->get('/api/v1/payslips/'.$payslip->id.'/download')->assertOk()->assertDownload($filename);
+
+        Storage::disk('local')->assertExists($payslip->file_path);
+        $this->assertSame('<html>Private payslip</html>', Storage::disk('local')->get($payslip->file_path));
     }
 
     public function test_owner_mark_viewed_records_first_view_once_and_rejects_unpublished_document(): void

@@ -2,8 +2,10 @@
 
 namespace App\Http\Resources;
 
+use App\Services\Workspace\ResourceLabelService;
 use DateTimeInterface;
 use Illuminate\Http\Request;
+use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Http\Resources\Json\JsonResource;
 
 abstract class ApiResource extends JsonResource
@@ -11,6 +13,13 @@ abstract class ApiResource extends JsonResource
     protected const FIELDS = [];
 
     protected const DATES = [];
+
+    public static function collection(mixed $resource): AnonymousResourceCollection
+    {
+        app(ResourceLabelService::class)->prepareCollection($resource, static::FIELDS);
+
+        return parent::collection($resource);
+    }
 
     public function toArray(Request $request): array
     {
@@ -23,6 +32,8 @@ abstract class ApiResource extends JsonResource
                 : $value;
         }
 
-        return $data;
+        $labels = app(ResourceLabelService::class)->labels($this->resource, static::FIELDS);
+
+        return $labels === [] ? $data : $data + ['display_labels' => $labels];
     }
 }

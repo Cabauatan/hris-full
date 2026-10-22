@@ -17,6 +17,15 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        app()->booted(static function () use ($middleware): void {
+            $middleware->trustProxies(
+                at: config('proxies.trusted', []),
+                headers: Request::HEADER_X_FORWARDED_FOR
+                    | Request::HEADER_X_FORWARDED_HOST
+                    | Request::HEADER_X_FORWARDED_PORT
+                    | Request::HEADER_X_FORWARDED_PROTO,
+            );
+        });
         $middleware->append(EnsureApiResponseSecurity::class);
         $middleware->alias(['auth.session' => AuthenticateAccountSession::class]);
         $middleware->redirectGuestsTo(

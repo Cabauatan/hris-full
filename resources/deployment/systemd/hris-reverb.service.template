@@ -1,0 +1,27 @@
+[Unit]
+Description=HRIS private Reverb websocket server
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User={{USER}}
+Group={{USER}}
+WorkingDirectory={{ROOT}}/backend
+ExecStart=/usr/bin/php8.5 artisan reverb:start --host=127.0.0.1 --port=8082 --no-interaction
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+LimitNOFILE=10000
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths={{ROOT}}/backend/storage {{ROOT}}/backend/bootstrap/cache
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
