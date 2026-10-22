@@ -298,12 +298,34 @@ test('authenticated API responses bypass browser, Cloudflare and CDN caches', as
 
   assert.equal(received.cache, 'no-store')
   assert.equal(received.headers.get('cache-control'), 'no-store')
-  assert.deepEqual(options, { cf: { cacheTtl: 0, cacheEverything: false } })
+  assert.equal(options, undefined)
   assert.equal(response.headers.get('cache-control'), 'no-store, private')
   assert.equal(response.headers.get('cdn-cache-control'), 'no-store')
   assert.equal(response.headers.get('cloudflare-cdn-cache-control'), 'no-store')
   assert.equal(response.headers.has('age'), false)
   assert.equal(response.headers.has('expires'), false)
+})
+
+test('health requests reach the origin without a cache TTL override that conflicts with Workers no-store', async () => {
+  let originReached = false
+  mock.method(globalThis, 'fetch', async (outbound, init) => {
+    // workerd Request::serializeCfBlobJson rejects a no-store request paired with cacheTtl: 0.
+    if (
+      outbound.cache === 'no-store' &&
+      init?.cf?.cacheTtl !== undefined &&
+      init.cf.cacheTtl !== -1
+    ) {
+      throw new TypeError('CacheTtl is not compatible with the no-store request cache mode.')
+    }
+    originReached = true
+    return Response.json({ status: 'up' })
+  })
+
+  const response = await worker.fetch(request('/up'), environment())
+
+  assert.equal(response.status, 200)
+  assert.deepEqual(await response.json(), { status: 'up' })
+  assert.equal(originReached, true)
 })
 
 test('redirects are returned without following them or forwarding a cookie to another origin', async () => {

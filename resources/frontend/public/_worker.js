@@ -169,7 +169,7 @@ export default {
     })
     let phase = 'fetch'
     try {
-      const upstream = await fetch(outbound, { cf: { cacheTtl: 0, cacheEverything: false } })
+      const upstream = await fetch(outbound)
       phase = 'headers'
       const headers = responseHeaders(upstream)
       phase = 'response'
