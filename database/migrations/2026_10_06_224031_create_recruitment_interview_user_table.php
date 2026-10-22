@@ -16,7 +16,7 @@ return new class extends Migration
             $table->foreignId('user_id')->constrained()->cascadeOnDelete();
             $table->timestamps();
 
-            $table->unique(['recruitment_interview_id', 'user_id'], 'uq_interview_user');
+            $table->primary(['recruitment_interview_id', 'user_id']);
             $table->index(['user_id', 'recruitment_interview_id'], 'idx_interview_user_staff');
         });
     }
