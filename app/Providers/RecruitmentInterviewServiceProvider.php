@@ -27,7 +27,7 @@ class RecruitmentInterviewServiceProvider extends ServiceProvider
                 && app(RecruitmentInterviewService::class)->canJoin($interview, $actor);
         });
 
-        foreach (['interview-join' => 20, 'interview-signal' => 240, 'interview-broadcast-auth' => 60] as $name => $maximum) {
+        foreach (['interview-join' => 20, 'interview-signal' => 240, 'interview-broadcast-auth' => 60, 'interview-messages-read' => 120, 'interview-messages-send' => 30] as $name => $maximum) {
             RateLimiter::for($name, function (Request $request) use ($name, $maximum): Limit {
                 $actor = $request->user();
                 $kind = $actor instanceof Applicant ? 'applicant' : 'user';

@@ -8,7 +8,15 @@ export function interviewPath(scope, id) {
   return `/${scope === 'applicant' ? 'applicant' : 'recruitment'}/interviews/${id}`
 }
 
-export function connectInterview({ uuid, scope, onSignal, onEnded, onReady, onError }) {
+export function connectInterview({
+  uuid,
+  scope,
+  onSignal = () => {},
+  onEnded = () => {},
+  onMessage = () => {},
+  onReady = () => {},
+  onError = () => {},
+}) {
   const port = Number(settings.VITE_REVERB_PORT || 8082)
   if (!settings.VITE_REVERB_APP_KEY || !Number.isInteger(port) || port < 1 || port > 65535)
     throw new Error('The interview connection is not configured. Contact HR.')
@@ -57,6 +65,9 @@ export function connectInterview({ uuid, scope, onSignal, onEnded, onReady, onEr
     })
     .listen('.interview.ended', (event) => {
       if (!closed) onEnded(event)
+    })
+    .listen('.interview.message', (event) => {
+      if (!closed) onMessage(event)
     })
     .subscribed(() => {
       if (!closed) {

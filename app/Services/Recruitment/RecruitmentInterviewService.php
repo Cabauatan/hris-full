@@ -19,7 +19,10 @@ use RuntimeException;
 
 class RecruitmentInterviewService
 {
-    public function __construct(private readonly OutboundNotificationService $updates) {}
+    public function __construct(
+        private readonly OutboundNotificationService $updates,
+        private readonly RecruitmentIceService $ice,
+    ) {}
 
     /** @param array<string, mixed> $input */
     public function schedule(JobApplication $application, User $scheduler, array $input): RecruitmentInterview
@@ -83,7 +86,16 @@ class RecruitmentInterviewService
     /** @return array{interview: RecruitmentInterview, actor: array<string, mixed>, participants: list<array<string, mixed>>, ice_servers: array} */
     public function join(RecruitmentInterview $interview, User|Applicant $actor): array
     {
-        return DB::transaction(function () use ($interview, $actor): array {
+        $availableUntil = DB::transaction(function () use ($interview, $actor): CarbonImmutable {
+            [$application, $interview] = $this->lockInterview($interview);
+            $this->freshParticipant($actor, $interview, $application);
+            $this->ensureRoomOpen($interview, $application);
+
+            return $this->window($interview)['until'];
+        });
+        $iceServers = $this->ice->servers($availableUntil);
+
+        return DB::transaction(function () use ($interview, $actor, $iceServers): array {
             [$application, $interview] = $this->lockInterview($interview);
             $actor = $this->freshParticipant($actor, $interview, $application);
             $this->ensureRoomOpen($interview, $application);
@@ -95,7 +107,7 @@ class RecruitmentInterviewService
                 'interview' => $interview,
                 'actor' => $this->identity($actor),
                 'participants' => $this->participants($interview),
-                'ice_servers' => config('recruitment.ice_servers', []),
+                'ice_servers' => $iceServers,
             ];
         });
     }

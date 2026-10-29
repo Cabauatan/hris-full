@@ -8,6 +8,7 @@ import { useInterviewStore } from '@/stores/interview'
 import { interviewPath } from '@/realtime/interview'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
+import InterviewChat from '@/components/InterviewChat.vue'
 
 const route = useRoute(),
   router = useRouter()
@@ -190,6 +191,13 @@ onBeforeUnmount(() => {
         />
       </div>
     </div>
+    <InterviewChat
+      v-if="interview && actorId"
+      :key="`${scope}:${actorId}:${interview.id}`"
+      :scope="scope"
+      :interview="interview"
+      :actor-id="Number(actorId)"
+    />
   </section>
 </template>
 

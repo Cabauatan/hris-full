@@ -72,6 +72,7 @@ class RecruitmentInterviewApiTest extends FormRequestTestCase
     public function test_unassigned_managers_can_view_but_cannot_join_and_assigned_panel_has_collision_safe_roster(): void
     {
         $this->travelTo('2026-10-07 09:00:00');
+        config(['recruitment.ice_servers' => []]);
         $staff = $this->user('recruitment.view', 'recruitment.manage');
         $unassigned = $this->user('recruitment.view', 'recruitment.manage');
         $interview = RecruitmentInterview::factory()->hasAttached($staff, [], 'interviewers')->create(['scheduled_at' => now()]);

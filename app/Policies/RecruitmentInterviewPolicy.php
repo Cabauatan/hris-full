@@ -46,6 +46,16 @@ class RecruitmentInterviewPolicy
         return $this->interviews->canJoin($interview, $actor);
     }
 
+    public function readMessages(User|Applicant $actor, RecruitmentInterview $interview): bool|Response
+    {
+        return $this->participate($actor, $interview);
+    }
+
+    public function sendMessage(User|Applicant $actor, RecruitmentInterview $interview): bool|Response
+    {
+        return $this->participate($actor, $interview);
+    }
+
     public function cancel(User|Applicant $actor, RecruitmentInterview $interview): bool
     {
         return $actor instanceof User && $actor->hasPermission('recruitment.manage');

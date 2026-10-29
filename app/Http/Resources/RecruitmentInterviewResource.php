@@ -30,6 +30,8 @@ class RecruitmentInterviewResource extends ApiResource
             'abilities' => [
                 'view' => $actor?->can('view', $this->resource) ?? false,
                 'join' => $actor?->can('join', $this->resource) ?? false,
+                'read_messages' => $actor?->can('readMessages', $this->resource) ?? false,
+                'send_message' => $actor?->can('join', $this->resource) ?? false,
                 'cancel' => $canManage && $scheduled,
                 'complete' => $canManage && $scheduled,
             ],
