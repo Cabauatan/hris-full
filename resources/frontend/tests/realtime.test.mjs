@@ -239,7 +239,7 @@ test('TLS configuration uses wss while invalid configured ports cannot open a co
   settings.VITE_REVERB_PORT = '8443'
   const connection = realtime.connectRealtime()
   assert.equal(connection.options.forceTLS, true)
-  assert.deepEqual(connection.options.enabledTransports, ['wss'])
+  assert.deepEqual(connection.options.enabledTransports, ['ws'])
   assert.equal(connection.options.wssPort, 8443)
   realtime.disconnectRealtime()
   settings.VITE_REVERB_PORT = '0'

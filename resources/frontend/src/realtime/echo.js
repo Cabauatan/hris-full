@@ -39,7 +39,8 @@ export function connectRealtime(onNotification = () => {}) {
     wsPort: port,
     wssPort: port,
     forceTLS: secure,
-    enabledTransports: secure ? ['wss'] : ['ws'],
+    // Pusher's ws transport also carries TLS; forceTLS selects the wss URL.
+    enabledTransports: ['ws'],
     authorizer: (channel) => ({
       authorize(socketId, callback) {
         const controller = new AbortController()

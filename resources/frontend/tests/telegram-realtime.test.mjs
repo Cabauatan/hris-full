@@ -285,7 +285,7 @@ test('TLS uses only wss and invalid ports never create a connection', () => {
   connect()
 
   assert.equal(echoes[0].options.forceTLS, true)
-  assert.deepEqual(echoes[0].options.enabledTransports, ['wss'])
+  assert.deepEqual(echoes[0].options.enabledTransports, ['ws'])
   assert.equal(echoes[0].options.wssPort, 8443)
   settings.VITE_REVERB_PORT = '0'
   assert.equal(connect(), undefined)
