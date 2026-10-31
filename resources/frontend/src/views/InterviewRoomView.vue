@@ -103,17 +103,24 @@ onBeforeUnmount(() => {
     <div v-if="interview && !call.joined && !call.joining" class="room-lobby">
       <i class="pi pi-video" aria-hidden="true"></i>
       <h2>Ready for your interview?</h2>
-      <p>
-        Join to request camera and microphone access. You can mute, turn off your camera, or leave
-        at any time.
-      </p>
+      <p>Join with your camera and microphone, or watch and listen without sharing either.</p>
       <p>{{ interview.interviewers?.map((person) => person.name).join(', ') }}</p>
-      <Button
-        label="Join interview"
-        icon="pi pi-video"
-        :disabled="!interview.abilities?.join"
-        @click="call.join(scope, interview.id, actorId)"
-      />
+      <div class="room-join-actions">
+        <Button
+          label="Join interview"
+          icon="pi pi-video"
+          :disabled="!interview.abilities?.join"
+          @click="call.join(scope, interview.id, actorId)"
+        />
+        <Button
+          label="Watch and listen only"
+          icon="pi pi-headphones"
+          severity="secondary"
+          outlined
+          :disabled="!interview.abilities?.join"
+          @click="call.join(scope, interview.id, actorId, { receiveOnly: true })"
+        />
+      </div>
       <p v-if="!interview.abilities?.join">
         The room opens 15 minutes before the schedule. Only assigned participants can join.
       </p>
@@ -126,13 +133,19 @@ onBeforeUnmount(() => {
       <div class="room-grid">
         <article class="room-tile">
           <video
+            v-if="call.localStream"
             :ref="(element) => video(element, call.localStream)"
             autoplay
             playsinline
             muted
             aria-label="Your camera preview"
-          ></video
-          ><span
+          ></video>
+          <div v-else-if="call.joined" class="room-waiting">
+            <i class="pi pi-headphones" aria-hidden="true"></i>
+            <p>Watching and listening only</p>
+          </div>
+          <span v-if="call.joined && !call.localStream">You · Watching and listening</span>
+          <span v-else
             >You{{ !call.cameraEnabled ? ' · Camera off' : ''
             }}{{ !call.micEnabled ? ' · Muted' : '' }}</span
           >
@@ -283,5 +296,11 @@ h1 {
   justify-content: center;
   gap: 0.75rem;
   margin: 1.5rem 0;
+}
+.room-join-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.75rem;
 }
 </style>

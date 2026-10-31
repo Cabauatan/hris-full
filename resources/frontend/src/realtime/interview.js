@@ -170,7 +170,8 @@ export function createInterviewPeers({
         peer.makingOffer = false
       }
     }
-    for (const track of stream.getTracks()) pc.addTrack(track, stream)
+    // Participants sharing media initiate negotiation; viewers answer their offers.
+    for (const track of stream?.getTracks() || []) pc.addTrack(track, stream)
     return peer
   }
 

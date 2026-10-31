@@ -11,8 +11,8 @@ export const useInterviewStore = defineStore('interview', () => {
   const joining = ref(false)
   const joined = ref(false)
   const error = ref('')
-  const micEnabled = ref(true)
-  const cameraEnabled = ref(true)
+  const micEnabled = ref(false)
+  const cameraEnabled = ref(false)
   let version = 0
   let connection
   let peers
@@ -44,6 +44,8 @@ export const useInterviewStore = defineStore('interview', () => {
     room.value = null
     joining.value = false
     joined.value = false
+    micEnabled.value = false
+    cameraEnabled.value = false
     error.value = ''
     connection = undefined
     peers = undefined
@@ -59,7 +61,7 @@ export const useInterviewStore = defineStore('interview', () => {
         .catch(() => {})
   }
 
-  async function join(scope, id, expectedActorId) {
+  async function join(scope, id, expectedActorId, { receiveOnly = false } = {}) {
     if (joining.value || joined.value) return
     leave(false)
     const currentVersion = version
@@ -79,8 +81,12 @@ export const useInterviewStore = defineStore('interview', () => {
     try {
       await leaving
       if (!current()) return
-      if (!globalThis.navigator?.mediaDevices?.getUserMedia || !globalThis.RTCPeerConnection)
-        throw new Error('Camera calls need a supported browser using HTTPS or localhost.')
+      if (
+        globalThis.isSecureContext === false ||
+        !globalThis.RTCPeerConnection ||
+        (!receiveOnly && !globalThis.navigator?.mediaDevices?.getUserMedia)
+      )
+        throw new Error('Interview calls need a supported browser using HTTPS or localhost.')
       const { data } = await http.post(`${interviewPath(scope, id)}/join`, undefined, {
         signal: controller.signal,
       })
@@ -88,21 +94,23 @@ export const useInterviewStore = defineStore('interview', () => {
       const details = data.data
       if (details.actor.kind !== scope || Number(details.actor.id) !== Number(expectedActorId))
         throw new Error('Your account changed. Please reload before joining.')
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: { width: { ideal: 640 }, height: { ideal: 360 } },
-      })
+      const stream = receiveOnly
+        ? null
+        : await navigator.mediaDevices.getUserMedia({
+            audio: true,
+            video: { width: { ideal: 640 }, height: { ideal: 360 } },
+          })
       if (!current()) {
         stopStream(stream)
         return
       }
       localStream.value = stream
-      for (const track of stream.getTracks())
+      for (const track of stream?.getTracks() || [])
         track.onended = () =>
           fail(new Error('Your camera or microphone disconnected. Please rejoin.'))
       room.value = details
-      micEnabled.value = true
-      cameraEnabled.value = true
+      micEnabled.value = Boolean(stream)
+      cameraEnabled.value = Boolean(stream)
       const send = (type, target_key, payload) => {
         if (!current()) return Promise.resolve()
         return http.post(
@@ -187,13 +195,16 @@ export const useInterviewStore = defineStore('interview', () => {
   }
 
   function toggleMic() {
+    const tracks = localStream.value?.getAudioTracks() || []
+    if (!tracks.length) return
     micEnabled.value = !micEnabled.value
-    for (const track of localStream.value?.getAudioTracks() || []) track.enabled = micEnabled.value
+    for (const track of tracks) track.enabled = micEnabled.value
   }
   function toggleCamera() {
+    const tracks = localStream.value?.getVideoTracks() || []
+    if (!tracks.length) return
     cameraEnabled.value = !cameraEnabled.value
-    for (const track of localStream.value?.getVideoTracks() || [])
-      track.enabled = cameraEnabled.value
+    for (const track of tracks) track.enabled = cameraEnabled.value
   }
   return {
     room,

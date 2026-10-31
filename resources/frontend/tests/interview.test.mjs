@@ -152,7 +152,12 @@ function signal(
 ) {
   return { type, sender, target_key: target, payload, interview_uuid: uuid }
 }
-function peerManager({ local = actor(), roster = [actor(), actor('applicant', 7)], send } = {}) {
+function peerManager({
+  local = actor(),
+  roster = [actor(), actor('applicant', 7)],
+  localStream = stream(),
+  send,
+} = {}) {
   const sent = [],
     remotes = [],
     states = [],
@@ -160,7 +165,7 @@ function peerManager({ local = actor(), roster = [actor(), actor('applicant', 7)
   const manager = realtime.createInterviewPeers({
     actor: local,
     participants: roster,
-    stream: stream(),
+    stream: localStream,
     iceServers: [],
     send:
       send ||
@@ -245,6 +250,7 @@ beforeEach(() => {
     [
       'window',
       'RTCPeerConnection',
+      'isSecureContext',
       'setInterval',
       'clearInterval',
       'setTimeout',
@@ -592,6 +598,260 @@ test('camera and microphone remain idle until join and websocket subscription st
   assert.deepEqual(JSON.parse(calls.at(-1).data), { type: 'ready', target_key: null, payload: {} })
   assert.equal(timeouts.size, 0)
   assert.equal(intervals.size, 1)
+})
+
+for (const scope of ['user', 'applicant'])
+  test(`${scope} can explicitly watch and listen without media devices or capture permission`, async () => {
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: {} })
+
+    await store.join(scope, 42, 7, { receiveOnly: true })
+
+    assert.equal(store.error, '')
+    assert.equal(store.localStream, null)
+    assert.equal(store.micEnabled, false)
+    assert.equal(store.cameraEnabled, false)
+    assert.equal(captures.length, 0)
+    assert.equal(store.joining, true)
+    assert.deepEqual(paths(), [
+      `GET /${scope === 'applicant' ? 'applicant/auth' : 'auth'}/csrf-cookie`,
+      `POST /${scope === 'applicant' ? 'applicant' : 'recruitment'}/interviews/42/join`,
+    ])
+
+    echoes[0].channels[0].ready()
+    await settle()
+    assert.equal(store.joined, true)
+    assert.equal(store.room.actor.kind, scope)
+    assert.deepEqual(JSON.parse(calls.at(-1).data), {
+      type: 'ready',
+      target_key: null,
+      payload: {},
+    })
+    store.toggleMic()
+    store.toggleCamera()
+    assert.equal(store.micEnabled, false)
+    assert.equal(store.cameraEnabled, false)
+    assert.equal(captures.length, 0)
+  })
+
+test('watching and listening still requires server admission before opening a room connection', async () => {
+  handler = (config) =>
+    config.url.endsWith('/csrf-cookie') ? response(config, '', 204) : failResponse(config, 403)
+
+  await store.join('user', 42, 7, { receiveOnly: true })
+
+  assert.match(store.error, /do not have access/i)
+  assert.equal(store.room, null)
+  assert.equal(store.joined, false)
+  assert.equal(store.joining, false)
+  assert.equal(captures.length, 0)
+  assert.equal(echoes.length, 0)
+  assert.equal(intervals.size, 0)
+})
+
+test('watching and listening cannot accept a different actor or an applicant and employee ID collision', async () => {
+  for (const returnedActor of [details('applicant', 7), details('user', 8)]) {
+    handler = (config) =>
+      config.url.endsWith('/csrf-cookie')
+        ? response(config, '', 204)
+        : response(config, { data: returnedActor })
+
+    await store.join('user', 42, 7, { receiveOnly: true })
+
+    assert.match(store.error, /account changed/i)
+    assert.equal(store.room, null)
+    assert.equal(store.joined, false)
+    assert.equal(captures.length, 0)
+    assert.equal(echoes.length, 0)
+  }
+})
+
+for (const receiveOnly of [false, true])
+  test(`${receiveOnly ? 'watching and listening' : 'normal capture'} cannot bypass HTTPS or missing WebRTC support`, async () => {
+    globalThis.isSecureContext = false
+
+    await store.join('user', 42, 7, { receiveOnly })
+
+    assert.match(store.error, /HTTPS or localhost/i)
+    assert.equal(calls.length, 0)
+    assert.equal(captures.length, 0)
+    assert.equal(echoes.length, 0)
+
+    globalThis.isSecureContext = true
+    globalThis.RTCPeerConnection = undefined
+    await store.join('user', 42, 7, { receiveOnly })
+
+    assert.match(store.error, /supported browser/i)
+    assert.equal(calls.length, 0)
+    assert.equal(captures.length, 0)
+    assert.equal(echoes.length, 0)
+    assert.equal(store.joining, false)
+  })
+
+test('cancelling a watch-only admission ignores its late response without opening a socket', async () => {
+  const pending = deferred()
+  handler = (config) =>
+    config.url.endsWith('/csrf-cookie') ? response(config, '', 204) : pending.promise
+  const joining = store.join('user', 42, 7, { receiveOnly: true })
+  await settle()
+  const request = calls.find(({ url }) => url.endsWith('/join'))
+
+  store.leave(false)
+  pending.resolve(response(request, { data: details() }))
+  await joining
+
+  assert.equal(request.signal.aborted, true)
+  assert.equal(store.room, null)
+  assert.equal(store.joined, false)
+  assert.equal(store.joining, false)
+  assert.equal(store.error, '')
+  assert.equal(captures.length, 0)
+  assert.equal(echoes.length, 0)
+})
+
+for (const receiverFirst of [true, false])
+  test(`the media sender initiates an offer and a watch-only participant receives it when ${receiverFirst ? 'the receiver' : 'the sender'} joins first`, async () => {
+    const receiverActor = actor('user', 7),
+      senderActor = actor('applicant', 7),
+      phoneStream = stream(),
+      members = new Map(),
+      queue = [],
+      sent = []
+    const roster = [receiverActor, senderActor]
+    const attach = (local) => {
+      const member = peerManager({
+        local,
+        roster,
+        localStream: local.kind === 'user' ? null : phoneStream,
+        send: async (type, target_key, payload) => {
+          const event = { sender: local, type, target_key, payload }
+          sent.push(event)
+          queue.push(event)
+        },
+      })
+      members.set(local.key, member)
+      return member
+    }
+    const drain = async () => {
+      while (queue.length) {
+        assert.ok(sent.length <= 8, 'Participant discovery must finish without a ready loop')
+        const event = queue.shift()
+        for (const { manager } of members.values()) await manager.receive(event)
+      }
+    }
+    const order = receiverFirst ? roster : [...roster].reverse()
+    const first = attach(order[0])
+    await first.manager.start()
+    await drain()
+    const second = attach(order[1])
+    await second.manager.start()
+    await drain()
+    const senderPc = peerConnections.find(({ tracks }) => tracks.length === 2),
+      receiverPc = peerConnections.find(({ tracks }) => tracks.length === 0)
+    assert.equal(peerConnections.length, 2)
+    assert.ok(senderPc)
+    assert.ok(receiverPc)
+    assert.equal(receiverPc.localDescription, undefined)
+
+    await senderPc.onnegotiationneeded()
+    await drain()
+
+    assert.deepEqual(
+      sent
+        .filter(({ type }) => ['offer', 'answer'].includes(type))
+        .map(({ sender, type, target_key }) => ({ sender: sender.key, type, target_key })),
+      [
+        { sender: 'applicant:7', type: 'offer', target_key: 'user:7' },
+        { sender: 'user:7', type: 'answer', target_key: 'applicant:7' },
+      ],
+    )
+    assert.equal(senderPc.signalingState, 'stable')
+    assert.equal(receiverPc.signalingState, 'stable')
+    assert.deepEqual(receiverPc.tracks, [])
+    receiverPc.ontrack({ streams: [phoneStream] })
+    assert.deepEqual(members.get('user:7').remotes, [{ key: 'applicant:7', remote: phoneStream }])
+    assert.deepEqual(members.get('user:7').errors, [])
+    assert.deepEqual(members.get('applicant:7').errors, [])
+  })
+
+test('duplicate or different-mode join clicks cannot capture devices during an existing watch-only join', async () => {
+  await store.join('user', 42, 7, { receiveOnly: true })
+
+  await store.join('user', 42, 7)
+  echoes[0].channels[0].ready()
+  await settle()
+  await store.join('user', 42, 7)
+
+  assert.equal(calls.filter(({ url }) => url.endsWith('/join')).length, 1)
+  assert.equal(captures.length, 0)
+  assert.equal(echoes.length, 1)
+  assert.equal(store.joined, true)
+  assert.equal(store.localStream, null)
+})
+
+test('leaving a watch-only call closes incoming media and permits a new normal capture join', async () => {
+  await store.join('user', 42, 7, { receiveOnly: true })
+  const oldEcho = echoes[0],
+    oldChannel = oldEcho.channels[0],
+    joinRequest = calls.find(({ url }) => url.endsWith('/join'))
+  oldChannel.ready()
+  await settle()
+  oldChannel.listeners['.interview.signal'](signal('ready', actor('applicant', 7), 'user:7'))
+  await settle()
+  const pc = peerConnections[0],
+    lateTrack = pc.ontrack
+  pc.ontrack({ streams: [stream()] })
+  assert.ok(store.remoteStreams['applicant:7'])
+
+  store.leave()
+  await settle()
+  lateTrack({ streams: [stream()] })
+
+  assert.equal(oldEcho.disconnected, true)
+  assert.equal(pc.closed, true)
+  assert.equal(joinRequest.signal.aborted, true)
+  assert.deepEqual(store.remoteStreams, {})
+  assert.equal(store.localStream, null)
+  assert.equal(store.micEnabled, false)
+  assert.equal(store.cameraEnabled, false)
+  assert.equal(intervals.size, 0)
+  assert.equal(timeouts.size, 0)
+  assert.equal(
+    calls.filter(({ url, data }) => url.endsWith('/signal') && JSON.parse(data).type === 'leave')
+      .length,
+    1,
+  )
+
+  await store.join('user', 43, 7)
+
+  assert.equal(captures.length, 1)
+  assert.ok(store.localStream)
+  assert.equal(store.micEnabled, true)
+  assert.equal(store.cameraEnabled, true)
+  assert.equal(echoes.length, 2)
+  assert.equal(store.error, '')
+})
+
+test('an authorization revocation closes a watch-only call and clears its incoming streams', async () => {
+  await store.join('applicant', 42, 7, { receiveOnly: true })
+  const echo = echoes[0]
+  echo.channels[0].ready()
+  await settle()
+  echo.channels[0].listeners['.interview.signal'](signal('ready', actor('user', 7), 'applicant:7'))
+  await settle()
+  const pc = peerConnections[0]
+  pc.ontrack({ streams: [stream()] })
+  assert.ok(store.remoteStreams['user:7'])
+  handler = (config) => response(config, { data: { abilities: { join: false } } })
+
+  await [...intervals.values()][0].callback()
+
+  assert.match(store.error, /no longer available/i)
+  assert.equal(store.joined, false)
+  assert.equal(echo.disconnected, true)
+  assert.equal(pc.closed, true)
+  assert.deepEqual(store.remoteStreams, {})
+  assert.equal(intervals.size, 0)
+  assert.equal(captures.length, 0)
 })
 
 test('identity changes or an applicant/user numeric ID collision cannot start media capture', async () => {
