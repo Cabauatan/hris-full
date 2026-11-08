@@ -15,9 +15,11 @@ const route = useRoute()
 const router = useRouter()
 const form = ref({ employee_number: '', password: '', remember: false })
 const busy = ref(false)
+const reconnecting = ref(false)
 const error = ref('')
 const errors = ref({})
 async function submit() {
+  if (busy.value || reconnecting.value) return
   busy.value = true
   error.value = ''
   errors.value = {}
@@ -34,6 +36,19 @@ async function submit() {
     errors.value = detail.errors
   } finally {
     busy.value = false
+  }
+}
+async function retryConnection() {
+  if (busy.value || reconnecting.value) return
+  reconnecting.value = true
+  error.value = ''
+  try {
+    await auth.initialize(true)
+    if (auth.authenticated) await router.replace(safeRedirect(route.query.redirect, '/dashboard'))
+  } catch (failure) {
+    error.value = apiError(failure).message
+  } finally {
+    reconnecting.value = false
   }
 }
 </script>
@@ -55,9 +70,21 @@ async function submit() {
       <Message v-if="route.query.expired" severity="warn" :closable="false"
         >Your session has ended. Please sign in again.</Message
       >
-      <Message v-if="auth.connectionError" severity="warn" :closable="false">{{
-        auth.connectionError
-      }}</Message>
+      <Message v-if="auth.connectionError" severity="warn" :closable="false">
+        <div class="connection-warning">
+          <span>{{ auth.connectionError }}</span>
+          <Button
+            label="Retry connection"
+            icon="pi pi-refresh"
+            severity="secondary"
+            outlined
+            size="small"
+            :loading="reconnecting"
+            :disabled="busy || reconnecting"
+            @click="retryConnection"
+          />
+        </div>
+      </Message>
       <form class="form-stack" @submit.prevent="submit">
         <label class="field-label" for="login-employee-number"
           >Employee number
@@ -68,7 +95,7 @@ async function submit() {
             autocomplete="username"
             placeholder="EMP-0001"
             maxlength="50"
-            :disabled="busy"
+            :disabled="busy || reconnecting"
             required
             fluid
           /><small
@@ -87,7 +114,7 @@ async function submit() {
             toggle-mask
             :input-props="{ autocomplete: 'current-password' }"
             placeholder="Enter your password"
-            :disabled="busy"
+            :disabled="busy || reconnecting"
             required
             fluid
           /><small v-for="message in errors.password || []" :key="message" class="field-error">{{
@@ -95,7 +122,7 @@ async function submit() {
           }}</small></label
         >
         <label class="check-row"
-          ><Checkbox v-model="form.remember" binary :disabled="busy" /><span
+          ><Checkbox v-model="form.remember" binary :disabled="busy || reconnecting" /><span
             >Keep me signed in</span
           ></label
         >
@@ -106,6 +133,7 @@ async function submit() {
           icon="pi pi-arrow-right"
           icon-pos="right"
           :loading="busy"
+          :disabled="reconnecting"
           fluid
         />
       </form>
@@ -118,6 +146,11 @@ async function submit() {
 </template>
 
 <style scoped>
+.connection-warning {
+  display: grid;
+  justify-items: start;
+  gap: 0.75rem;
+}
 .applicant-portal {
   display: flex;
   align-items: center;

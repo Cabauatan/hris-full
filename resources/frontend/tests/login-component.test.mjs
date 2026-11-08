@@ -2,8 +2,11 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { compileScript, parse } from '@vue/compiler-sfc'
+import { registerHooks } from 'node:module'
+import { createPinia, setActivePinia } from 'pinia'
+import { AxiosError } from 'axios'
 import * as vue from 'vue'
-import { apiError } from '../src/api/http.js'
+import { apiError, http, resetCsrf } from '../src/api/http.js'
 import { safeRedirect } from '../src/utils/forms.js'
 import {
   deferred,
@@ -13,29 +16,41 @@ import {
   settle,
 } from './helpers/component-harness.mjs'
 
-async function mountLogin(context, { signIn = async () => {}, redirect } = {}) {
+async function mountLogin(
+  context,
+  { signIn = async () => {}, initialize = async () => null, redirect, authStore } = {},
+) {
   const calls = []
   const redirects = []
+  const initializations = []
+  const auth =
+    authStore ||
+    vue.reactive({
+      connectionError: '',
+      authenticated: false,
+      signIn: async (payload) => {
+        calls.push({ ...payload })
+        return signIn(payload)
+      },
+      initialize: async (force) => {
+        initializations.push(force)
+        return initialize(force, auth)
+      },
+    })
   const dependencies = {
     'vue-router': {
       useRoute: () => ({ query: redirect === undefined ? {} : { redirect } }),
       useRouter: () => ({ replace: async (path) => redirects.push(path) }),
     },
     '@/stores/auth': {
-      useAuthStore: () => ({
-        connectionError: '',
-        signIn: async (payload) => {
-          calls.push({ ...payload })
-          return signIn(payload)
-        },
-      }),
+      useAuthStore: () => auth,
     },
     '@/api/http': { apiError },
     '@/utils/forms': { safeRedirect },
   }
   const mounted = await mountComponent('views/auth/LoginView.vue', dependencies)
   context.after(() => mounted.app.unmount())
-  return { ...mounted, calls, redirects, dependencies }
+  return { ...mounted, calls, redirects, dependencies, auth, initializations }
 }
 
 test('actual login sends a trimmed employee number, password and remember choice without email', async (context) => {
@@ -168,14 +183,7 @@ test('actual login resets busy state and exposes connectivity failures without n
   assert.deepEqual(view.redirects, [])
 })
 
-test('actual login template renders a bounded employee-number input and displays its server errors', async (context) => {
-  const view = await mountLogin(context, {
-    signIn: async () => {
-      throw httpFailure(422, 'Invalid credentials.', {
-        employee_number: ['Employee number is invalid.'],
-      })
-    },
-  })
+async function renderLogin(context, view) {
   const root = { children: [] }
   const renderer = vue.createRenderer({
     createElement: (tag) => ({ tag, props: {}, children: [] }),
@@ -222,6 +230,21 @@ test('actual login template renders a bounded employee-number input and displays
           onInput: (event) => emit('update:modelValue', event.target.value),
         }),
   }
+  const button = {
+    props: ['label', 'disabled', 'loading', 'type'],
+    setup:
+      (props, { attrs }) =>
+      () =>
+        vue.h(
+          'button',
+          {
+            ...attrs,
+            type: props.type || 'button',
+            disabled: props.disabled || props.loading,
+          },
+          props.label,
+        ),
+  }
   const modules = new Proxy(
     {
       vue,
@@ -231,7 +254,7 @@ test('actual login template renders a bounded employee-number input and displays
       'primevue/password': { default: input },
       'primevue/checkbox': { default: input },
       'primevue/message': { default: wrap },
-      'primevue/button': { default: wrap },
+      'primevue/button': { default: button },
     },
     { get: (target, key) => target[key] || { default: {} } },
   )
@@ -246,6 +269,18 @@ test('actual login template renders a bounded employee-number input and displays
   app.mount(root)
   context.after(() => app.unmount())
   const all = (node) => [node, ...(node.children || []).flatMap(all)]
+  return { root, all }
+}
+
+test('actual login template renders a bounded employee-number input and displays its server errors', async (context) => {
+  const view = await mountLogin(context, {
+    signIn: async () => {
+      throw httpFailure(422, 'Invalid credentials.', {
+        employee_number: ['Employee number is invalid.'],
+      })
+    },
+  })
+  const { root, all } = await renderLogin(context, view)
   const field = all(root).find(
     (node) => node.tag === 'input' && node.props.id === 'login-employee-number',
   )
@@ -278,4 +313,178 @@ test('actual login template renders a bounded employee-number input and displays
         all(node).some((child) => child.text === 'Employee number is invalid.'),
     ),
   )
+})
+
+test('connection retry forces a fresh session lookup without submitting credentials and recovers from anonymous 401', async (context) => {
+  const hooks = registerHooks({
+    resolve(specifier, scope, nextResolve) {
+      if (specifier === '@/api/http')
+        return nextResolve(new URL('../src/api/http.js', import.meta.url).href, scope)
+      return nextResolve(specifier, scope)
+    },
+  })
+  let useAuthStore
+  try {
+    ;({ useAuthStore } = await import('../src/stores/auth.js'))
+  } finally {
+    hooks.deregister()
+  }
+  setActivePinia(createPinia())
+  const auth = useAuthStore()
+  const originalAdapter = http.defaults.adapter
+  const requests = []
+  let reachable = false
+  http.defaults.adapter = async (config) => {
+    requests.push(`${config.method.toUpperCase()} ${config.url}`)
+    if (!reachable) throw new AxiosError('Test network failure', AxiosError.ERR_NETWORK, config)
+    const response = {
+      data: { message: 'Unauthenticated.' },
+      status: 401,
+      headers: {},
+      config,
+      request: {},
+    }
+    throw new AxiosError(
+      'Test anonymous session',
+      AxiosError.ERR_BAD_REQUEST,
+      config,
+      response.request,
+      response,
+    )
+  }
+  context.after(() => {
+    http.defaults.adapter = originalAdapter
+    auth.$dispose()
+    setActivePinia(undefined)
+    resetCsrf()
+  })
+  await auth.initialize()
+  const view = await mountLogin(context, { authStore: auth })
+  const credentials = {
+    employee_number: 'TEST-RECONNECT',
+    password: 'Test-only-password',
+    remember: true,
+  }
+  Object.assign(view.state.form.value, credentials)
+
+  await view.state.retryConnection()
+  assert.match(auth.connectionError, /Unable to connect/)
+  assert.equal(view.state.reconnecting.value, false)
+  assert.deepEqual(view.redirects, [])
+
+  reachable = true
+  await view.state.retryConnection()
+  assert.equal(auth.connectionError, '')
+  assert.equal(auth.authenticated, false)
+  assert.equal(view.state.reconnecting.value, false)
+  assert.deepEqual(view.state.form.value, credentials)
+  assert.deepEqual(requests, ['GET /auth/me', 'GET /auth/me', 'GET /auth/me'])
+  assert.deepEqual(view.redirects, [])
+})
+
+test('pending connection retry blocks duplicate retries and credential submission until lookup finishes', async (context) => {
+  const pending = deferred()
+  const view = await mountLogin(context, { initialize: () => pending.promise })
+  Object.assign(view.state.form.value, {
+    employee_number: 'TEST-RECONNECT',
+    password: 'Test-only-password',
+  })
+
+  const retrying = view.state.retryConnection()
+  assert.equal(view.state.reconnecting.value, true)
+  await view.state.retryConnection()
+  await view.state.submit()
+  assert.deepEqual(view.initializations, [true])
+  assert.deepEqual(view.calls, [])
+  assert.deepEqual(view.redirects, [])
+
+  pending.resolve(null)
+  await retrying
+  assert.equal(view.state.reconnecting.value, false)
+  await view.state.submit()
+  assert.equal(view.calls.length, 1)
+})
+
+test('connection retry cannot start while an employee sign-in is pending', async (context) => {
+  const pending = deferred()
+  const view = await mountLogin(context, { signIn: () => pending.promise })
+  const signingIn = view.state.submit()
+  await view.state.retryConnection()
+  await view.state.submit()
+  assert.deepEqual(view.initializations, [])
+  assert.equal(view.calls.length, 1)
+  assert.equal(view.state.busy.value, true)
+  pending.resolve()
+  await signingIn
+})
+
+for (const [redirect, expected] of [
+  ['/reports?type=attendance', '/reports?type=attendance'],
+  ['//external.example.test', '/dashboard'],
+])
+  test(`recovered authenticated session uses safe redirect for ${redirect}`, async (context) => {
+    const view = await mountLogin(context, {
+      redirect,
+      initialize: async (_, auth) => {
+        auth.authenticated = true
+      },
+    })
+    await view.state.retryConnection()
+    assert.deepEqual(view.initializations, [true])
+    assert.deepEqual(view.redirects, [expected])
+    assert.deepEqual(view.calls, [])
+    assert.equal(view.state.reconnecting.value, false)
+  })
+
+test('a failed connection retry remains retryable and never navigates or submits credentials', async (context) => {
+  let attempts = 0
+  const view = await mountLogin(context, {
+    initialize: async () => {
+      if (++attempts === 1) throw new Error('Test connection failure')
+      return { id: 123 }
+    },
+  })
+  await view.state.retryConnection()
+  assert.equal(view.state.error.value, 'Unable to reach the server. Please try again.')
+  assert.equal(view.state.reconnecting.value, false)
+  await view.state.retryConnection()
+  assert.deepEqual(view.initializations, [true, true])
+  assert.equal(view.state.error.value, '')
+  assert.deepEqual(view.redirects, [])
+  assert.deepEqual(view.calls, [])
+})
+
+test('actual login template shows retry only for connectivity errors and disables both actions during recovery', async (context) => {
+  const pending = deferred()
+  const view = await mountLogin(context, { initialize: () => pending.promise })
+  const { root, all } = await renderLogin(context, view)
+  const button = (label) =>
+    all(root).find(
+      (node) => node.tag === 'button' && all(node).some((child) => child.text === label),
+    )
+  assert.equal(button('Retry connection'), undefined)
+  view.auth.connectionError = 'Unable to connect to HRIS.'
+  await settle()
+  const retry = button('Retry connection')
+  assert.ok(retry)
+  assert.equal(retry.props.disabled, false)
+  const retrying = retry.props.onClick()
+  await settle()
+  assert.equal(button('Retry connection').props.disabled, true)
+  assert.equal(button('Sign in').props.disabled, true)
+  assert.ok(
+    all(root)
+      .filter((node) => node.tag === 'input')
+      .every((node) => node.props.disabled),
+  )
+  assert.deepEqual(view.initializations, [true])
+  assert.deepEqual(view.calls, [])
+  pending.resolve(null)
+  await retrying
+  await settle()
+  assert.equal(button('Retry connection').props.disabled, false)
+  assert.equal(button('Sign in').props.disabled, false)
+  view.auth.connectionError = ''
+  await settle()
+  assert.equal(button('Retry connection'), undefined)
 })
